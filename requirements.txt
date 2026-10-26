@@ -1,0 +1,9 @@
+torch>=2.3
+triton>=2.3        # installed with torch on Linux; listed for clarity
+transformers>=4.40
+safetensors
+huggingface_hub[cli]
+numpy
+pandas
+matplotlib
+pytest

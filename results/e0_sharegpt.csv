@@ -1,0 +1,5 @@
+system,token_states,reserved,internal_frag,free,mean_batch,tokens_per_step,steps,preemptions
+paged,0.9699,0.0,0.0143,0.0158,30.24,30.34,9906,951
+orca-oracle,0.3823,0.2549,0.2531,0.1096,12.78,12.83,23434,0
+orca-pow2,0.2958,0.1973,0.4196,0.0873,10.03,10.06,29866,0
+orca-max,0.1991,0.1325,0.5768,0.0915,6.83,6.85,43851,0

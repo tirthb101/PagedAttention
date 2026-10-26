@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+slurm/cluster.env
+logs/*
+!logs/.gitkeep
+.pytest_cache/
