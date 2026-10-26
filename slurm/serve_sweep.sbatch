@@ -5,6 +5,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --time=12:00:00   # cluster max is 5 days; final 1-hour-trace runs: --time=1-00:00:00
 #SBATCH --output=logs/%x-%A_%a.out
+#SBATCH --array=0-3%2     # 4 systems, at most 2 running at once (our 2-GPU limit); --array on the command line overrides
 # (no --mem: matches our known-working job. If a 13B job is OOM-killed while
 #  loading weights, add:  #SBATCH --mem=64G)
 #
@@ -13,7 +14,7 @@
 # so a job that hits its time limit keeps the rates it finished.
 #
 # Example (E1, ShareGPT, OPT-13B, 4 systems), from the repo root:
-#   sbatch --array=0-3 --export=ALL,EXP=e1,MODEL=facebook/opt-13b,TRACE=sharegpt slurm/serve_sweep.sbatch
+#   sbatch --export=ALL,EXP=e1,MODEL=facebook/opt-13b,TRACE=sharegpt slurm/serve_sweep.sbatch
 #
 # Smoke test first:
 #   sbatch --array=0 --time=00:20:00 \

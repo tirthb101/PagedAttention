@@ -53,12 +53,19 @@ results/ + plots  ◄──scp/git───────┘
 ```bash
 git clone <your-private-repo> ~/PagedAttention && cd ~/PagedAttention
 cp slurm/cluster.env.example slurm/cluster.env   # check PA_SCRATCH
-bash slurm/setup_env.sh                          # conda env + pip deps + model/dataset downloads
+sbatch slurm/setup_env.sbatch                    # step 1 (job): conda env + pip packages
+#   ...wait until it finishes (squeue -u $USER), check logs/pa-setup-<id>.out ends with "Environment ready"
+sbatch --export=ALL,SMALL=1 slurm/download_data.sbatch   # step 2 (job): small models + datasets (~3 GB)
+#   later, for OPT-13B: sbatch slurm/download_data.sbatch
 sbatch slurm/check_gpu.sbatch                    # GPU visible, torch.cuda works, OPT-125m generates
 cat logs/pa-check-<jobid>.out
 ```
 
-Always submit from the repo root: job scripts use relative paths (`slurm/common.sh`, `logs/`). `setup_env.sh` downloads everything up front because compute nodes may have no internet; jobs run with `HF_HUB_OFFLINE=1`. If the OPT-13B download (~26 GB) is slow, run it inside `tmux`/`screen` so it survives disconnects.
+Always submit from the repo root: job scripts use relative paths (`slurm/common.sh`, `logs/`). Models and datasets are downloaded up front because compute nodes may have no internet; jobs run with `HF_HUB_OFFLINE=1`.
+
+**If your cluster only allows work through `sbatch`** (no scripts on the login node), use the two `.sbatch` jobs above; they run `setup_env.sh` / `download_data.sh` on a compute node. They need internet on that node and say so clearly in the log if there is none. If the login node may run scripts, `bash slurm/setup_env.sh` and `bash slurm/download_data.sh --small` do the same directly.
+
+**Cluster rules for the download step.** `download_data.sh` moves ~3 GB (`--small`) or ~30 GB (full, with OPT-13B). Many clusters allow this on the login node, but some require a data-transfer node or ask that heavy work stay off login nodes. Check the usage policy or ask the admins before running it there. Run it inside `tmux`/`screen`; rerunning resumes an interrupted download. Never run benchmarks or GPU work on the login node -- only through `sbatch`.
 
 ## 4. Job scripts
 
@@ -75,7 +82,7 @@ All in `slurm/`, all follow the same pattern as the known-working script (partit
 
 ```bash
 # E1 on ShareGPT: 4 systems (paged, orca-oracle, orca-pow2, orca-max) → indices 0..3
-sbatch --array=0-3 --export=ALL,EXP=e1,MODEL=facebook/opt-13b,TRACE=sharegpt slurm/serve_sweep.sbatch
+sbatch --export=ALL,EXP=e1,MODEL=facebook/opt-13b,TRACE=sharegpt slurm/serve_sweep.sbatch   # array 0-3, max 2 at once (set in the script)
 squeue -u $USER          # watch
 sacct -j <jobid>         # after it ends: state, elapsed time
 ```
