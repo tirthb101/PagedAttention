@@ -94,20 +94,41 @@ def main() -> None:
           f"{engine.block_manager.get_num_free_gpu_blocks() == engine.block_manager.num_total_gpu_blocks}")
 
     if not args.no_check and args.temperature == 0.0:
-        same = 0
-        # Reference: HuggingFace forward pass over the whole sequence each step, with no KV
-        # cache at all, then argmax. (generate() is not used: it forbids EOS under
-        # min_new_tokens, while our benchmarks ignore EOS, so they could legitimately differ.)
-        for prompt, out in zip(prompts, outs):
-            ids = list(prompt) if tok is None else tok(prompt).input_ids
-            n = len(ids)
-            with torch.no_grad():
-                for _ in range(args.max_tokens):
-                    logits = model(torch.tensor([ids], device=device)).logits[0, -1]
-                    ids.append(int(torch.argmax(logits)))
-            same += ids[n:] == out.output_token_ids[0]
-        print(f"Matches HuggingFace (no-cache reference): {same}/{len(prompts)} prompts"
-              + ("" if device == "cpu" else "  (FP16 on GPU: rare near-ties can flip a token)"))
+        check_against_huggingface(model, tok, prompts, outs, dtype)
+
+
+def check_against_huggingface(model, tok, prompts, outs, dtype) -> None:
+    """Teacher-forced check: run plain HuggingFace (no KV cache) over prompt + OUR output in one
+    pass, and verify that at every position our token is HuggingFace's top choice.
+
+    In float16/bfloat16 two candidates can be within rounding error of each other ("near-tie");
+    then either choice is correct, so a mismatch with a tiny logit gap is reported as such.
+    """
+    device = next(model.parameters()).device
+    eos = tok.eos_token_id if tok is not None else model.config.eos_token_id
+    tol = 1e-4 if dtype in (torch.float32, torch.float64) else 0.1  # logit gap counted as a tie
+    exact = near = 0
+    for i, (prompt, out) in enumerate(zip(prompts, outs)):
+        ids = list(prompt) if tok is None else tok(prompt).input_ids
+        ours = out.output_token_ids[0]
+        with torch.no_grad():
+            logits = model(torch.tensor([ids + ours], device=device)).logits[0].float()
+        pred = logits[len(ids) - 1 : len(ids) - 1 + len(ours)]   # prediction for each of our tokens
+        ref = pred.argmax(-1).tolist()
+        diffs = [k for k, (a, b) in enumerate(zip(ours, ref)) if a != b]
+        if not diffs:
+            exact += 1
+            continue
+        gaps = [float(pred[k, ref[k]] - pred[k, ours[k]]) for k in diffs]
+        is_tie = max(gaps) <= tol
+        near += is_tie
+        k = diffs[0]
+        after_eos = eos in ours[:k]
+        print(f"  prompt {i}: {len(diffs)} position(s) differ, first at output token {k}; "
+              f"largest logit gap {max(gaps):.3f} -> {'near-tie (rounding), OK' if is_tie else 'REAL MISMATCH'}"
+              + ("; happens after the model emitted end-of-text (ignored on purpose)" if after_eos else ""))
+    print(f"Matches HuggingFace (no-cache reference): {exact}/{len(prompts)} exact, "
+          f"{exact + near}/{len(prompts)} within {dtype} rounding")
 
 
 if __name__ == "__main__":

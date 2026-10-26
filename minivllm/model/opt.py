@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from minivllm.attention import paged_attention, write_kv
+from minivllm.attention.paged_ref import paged_attention, plan_paged, write_kv
 
 
 @dataclass
@@ -63,6 +63,9 @@ class PagedOPT(nn.Module):
         h = h + dec.embed_positions.weight[meta.positions + self.pos_offset]
 
         num_tokens = input_ids.shape[0]
+        # Block lookups are the same for every layer: compute them once per step.
+        plan = plan_paged(meta.block_tables, meta.context_lens, meta.query_lens,
+                          kv_caches[0][0].shape[1], input_ids.device)
         for layer, (k_cache, v_cache) in zip(dec.layers, kv_caches):
             attn = layer.self_attn
             residual = h
@@ -74,7 +77,7 @@ class PagedOPT(nn.Module):
             write_kv(k, v, k_cache, v_cache, meta.slot_mapping)
             o = paged_attention(
                 q, k_cache, v_cache, meta.block_tables, meta.context_lens, meta.query_lens,
-                scale=attn.scaling,
+                scale=attn.scaling, plan=plan,
             )
             h = residual + attn.out_proj(o.reshape(num_tokens, -1))
             if not cfg.do_layer_norm_before:
