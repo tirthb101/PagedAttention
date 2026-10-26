@@ -25,6 +25,10 @@ if ! conda env list | awk '{print $1}' | grep -qx "$PA_CONDA_ENV"; then
 fi
 conda activate "$PA_CONDA_ENV"
 pip install --upgrade pip
+# PyTorch must match the cluster's NVIDIA driver: driver 570.x supports CUDA <= 12.8, while the
+# default pip wheel targets a newer CUDA and then cannot see the GPU. Install the matching build first.
+pip install torch --index-url "https://download.pytorch.org/whl/${PA_TORCH_CUDA:-cu128}"
 pip install -r "$REPO_DIR/requirements.txt"
+python -c "import torch; print('torch', torch.__version__, 'built for CUDA', torch.version.cuda)"
 
 echo "Environment ready. Next: slurm/download_data.sh (read its header: where downloads are allowed)"

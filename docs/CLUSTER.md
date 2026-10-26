@@ -10,6 +10,17 @@ Colab gives us a **Tesla T4 (16 GB)**, not an A100. Use it for interactive corre
 
 ## 1. What we know about the cluster
 
+From the department's *Singularity HPC Cluster User Guide* (cs.iitgn.ac.in/hpc):
+
+- Log in to the **master node** with `ssh` (Linux/WSL) or MobaXterm (Windows); campus network/VPN needed. The master node's address is in the guide.
+- Normal shell use on the master node is fine (`ls`, `mkdir`, `vim`, `git`, `sbatch`, `squeue`, `scancel`, `sacct`, `sinfo`). **Computation goes through `sbatch`.**
+- Conda environments are created on the master node: `module load anaconda3-2024`, `source /apps/compilers/anaconda3-2024/etc/profile.d/conda.sh`, `conda create ...` -- exactly what `slurm/setup_env.sh` does.
+- Files from the laptop: `scp <file> <user>@<master>:<dir>` (fallback for models/data if the cluster has no internet).
+- The cluster also runs **GitLab** and **JupyterHub** (same login as SSH). GitLab is a fallback if GitHub is unreachable; don't run GPU work in JupyterHub on the master node.
+- `squeue` shows QOS `32c2g5dw` (likely 32 cores / 2 GPUs / 5 days) and node `node1`.
+- **Checked 26 Oct:** GPU nodes `node1`, `node2` have **NVIDIA L40S 48 GB**, driver 570.86.10 (**CUDA ≤ 12.8**). PyTorch must be the `cu128` build (`setup_env.sh` does this); the default `cu130` wheel cannot see the GPU.
+
+
 From a known-working job script (`run_large_dataset.sh`) and the cluster limits:
 
 | Item | Value |
