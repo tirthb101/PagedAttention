@@ -13,7 +13,14 @@ mkdir -p "$PA_SCRATCH" "$HF_HOME" "$PIP_CACHE_DIR" "$TRITON_CACHE_DIR" "$PA_RESU
 
 module load $PA_MODULES
 source "$PA_CONDA_SH"
-if ! conda env list | grep -q "^$PA_CONDA_ENV "; then
+# Create the env unless a complete one exists. A folder left behind by a failed or interrupted
+# create (no conda-meta/history inside) is removed first; it only ever lives in your own ~/.conda.
+ENV_DIR="$HOME/.conda/envs/$PA_CONDA_ENV"
+if [ -d "$ENV_DIR" ] && [ ! -f "$ENV_DIR/conda-meta/history" ]; then
+  echo "Removing incomplete environment folder $ENV_DIR (left by an earlier failed attempt)"
+  rm -rf "$ENV_DIR"
+fi
+if ! conda env list | awk '{print $1}' | grep -qx "$PA_CONDA_ENV"; then
   conda create -y -n "$PA_CONDA_ENV" python=3.11
 fi
 conda activate "$PA_CONDA_ENV"
