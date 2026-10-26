@@ -34,8 +34,11 @@ class InputMetadata:
 
 
 class PagedOPT(nn.Module):
-    def __init__(self, hf_model: nn.Module) -> None:
+    def __init__(self, hf_model: nn.Module, attention_backend: str = "ref") -> None:
         super().__init__()
+        if attention_backend not in ("ref", "triton"):
+            raise ValueError("attention_backend must be 'ref' or 'triton'")
+        self.attention_backend = attention_backend
         cfg = hf_model.config
         if cfg.model_type != "opt":
             raise ValueError(f"PagedOPT supports OPT models, got {cfg.model_type}")
@@ -77,7 +80,7 @@ class PagedOPT(nn.Module):
             write_kv(k, v, k_cache, v_cache, meta.slot_mapping)
             o = paged_attention(
                 q, k_cache, v_cache, meta.block_tables, meta.context_lens, meta.query_lens,
-                scale=attn.scaling, plan=plan,
+                scale=attn.scaling, plan=plan, backend=self.attention_backend,
             )
             h = residual + attn.out_proj(o.reshape(num_tokens, -1))
             if not cfg.do_layer_norm_before:

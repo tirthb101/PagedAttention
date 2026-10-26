@@ -72,7 +72,7 @@ Owners: **A** = memory management + scheduler, **B** = model + attention + bench
 - [x] `benchmarks/trace.py`: synthetic ShareGPT / Alpaca, real ShareGPT / Alpaca loaders, Poisson arrivals, fixed seeds
 - [ ] Run the simulator on the real ShareGPT / Alpaca files (needs the download + tokenizer); WMT16 loader for E4
 - [x] `benchmarks/simulate_memory.py` (E0, laptop) — first chart for the slides
-- [ ] `benchmarks/run_serving.py` + `plot.py`
+- [x] `benchmarks/run_serving.py` + `plot.py` (26 Oct; smoke-tested on CPU)
 - [ ] Smoke job on OPT-125m, then E1 dry run on OPT-1.3B (find the request-rate range) → **M2**
 
 ## Week 4 — Fri 13 → Thu 19 Nov: full reproduction on OPT-13B
@@ -83,8 +83,9 @@ Owners: **A** = memory management + scheduler, **B** = model + attention + bench
 - [ ] E7 block-size sweep, E8 swap vs recompute (Fig. 18b, 19)
 
 **B**
-- [ ] Triton decode kernel; test vs reference; switch engine to it
-- [ ] E6 kernel microbenchmark (Fig. 18a)
+- [x] Triton decode kernel; test vs reference (CPU interpreter); engine `attention_backend="triton"` (26 Oct)
+- [ ] Triton kernel speed on GPU: `kernel_bench.py` on Colab T4, then cluster
+- [ ] E6 kernel microbenchmark (Fig. 18a) — script `benchmarks/kernel_bench.py` written
 - [ ] **E1–E2 headline runs on OPT-13B**: quick pass (10-min traces) first, then the final 1-hour-trace pass (= paper) submitted by Sat 14 Nov; it takes ~1.5 days on 2 GPUs
 - [ ] E5 chatbot (Fig. 17)
 - [ ] Fill the results table in EXPERIMENTS.md → **M3**

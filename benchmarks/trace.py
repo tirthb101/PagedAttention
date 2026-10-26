@@ -110,8 +110,14 @@ def load_sharegpt(path: str | Path, tokenizer, num_requests: int, rate: float = 
 
 def load_alpaca(path: str | Path, tokenizer, num_requests: int, rate: float = math.inf, seed: int = 0,
                 max_model_len: int = 2048) -> list[Request]:
-    """alpaca_data.json (or the HF dataset exported to JSON): instruction (+input) = prompt, output = output."""
-    data = json.loads(Path(path).read_text())
+    """Alpaca as JSON (alpaca_data.json) or the HF parquet: instruction (+input) = prompt, output = output."""
+    path = Path(path)
+    if path.suffix == ".parquet":
+        import pandas as pd
+
+        data = pd.read_parquet(path).to_dict("records")
+    else:
+        data = json.loads(path.read_text())
     rng = random.Random(seed)
     rng.shuffle(data)
     reqs: list[Request] = []
@@ -133,3 +139,24 @@ def summarize(reqs: list[Request]) -> str:
     mi = sum(r.prompt_len for r in reqs) / n
     mo = sum(r.output_len for r in reqs) / n
     return f"{n} requests, mean input {mi:.1f} tokens, mean output {mo:.1f} tokens"
+
+
+SHAREGPT_REPO, SHAREGPT_FILE = "anon8231489123/ShareGPT_Vicuna_unfiltered", "ShareGPT_V3_unfiltered_cleaned_split.json"
+ALPACA_REPO = "tatsu-lab/alpaca"
+
+
+def load_trace(name: str, tokenizer, num_requests: int, rate: float = math.inf, seed: int = 0,
+               max_model_len: int = 2048) -> list[Request]:
+    """'sharegpt' / 'alpaca' = real data from the Hugging Face cache (downloaded by slurm/setup_env.sh;
+    works offline once cached). 'synthetic-sharegpt' / 'synthetic-alpaca' = no download."""
+    if name.startswith("synthetic-"):
+        return synthetic_trace(name.removeprefix("synthetic-"), num_requests, rate, seed, max_model_len)
+    from huggingface_hub import hf_hub_download, snapshot_download
+
+    if name == "sharegpt":
+        path = hf_hub_download(SHAREGPT_REPO, SHAREGPT_FILE, repo_type="dataset")
+        return load_sharegpt(path, tokenizer, num_requests, rate, seed, max_model_len)
+    if name == "alpaca":
+        root = Path(snapshot_download(ALPACA_REPO, repo_type="dataset", allow_patterns=["*.parquet"]))
+        return load_alpaca(next(root.rglob("*.parquet")), tokenizer, num_requests, rate, seed, max_model_len)
+    raise ValueError(f"unknown trace {name!r}")

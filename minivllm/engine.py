@@ -58,10 +58,11 @@ class LLMEngine:
         scheduler_config: Optional[SchedulerConfig] = None,
         watermark: float = 0.01,
         memory_manager: str = "paged",          # "paged" | "orca-oracle" | "orca-pow2" | "orca-max"
+        attention_backend: str = "ref",         # "ref" (PyTorch) | "triton" (paged decode kernel)
         seed: int = 0,
         check_invariants: bool = False,
     ) -> None:
-        self.model = PagedOPT(hf_model).eval()
+        self.model = PagedOPT(hf_model, attention_backend).eval()
         self.tokenizer = tokenizer
         param = next(hf_model.parameters())
         self.device, self.dtype = param.device, param.dtype
@@ -99,11 +100,16 @@ class LLMEngine:
         self._groups: dict[str, SequenceGroup] = {}
         self._t0 = time.perf_counter()
         self.num_steps = 0
-        self.num_prefill_tokens = 0  # tokens computed in prefill (shows prefix reuse / recompute cost)
+        self.num_prefill_tokens = 0
+        self.num_running_sum = 0     # sum over steps of running requests -> mean batch size  # tokens computed in prefill (shows prefix reuse / recompute cost)
 
     # ---------------------------------------------------------------- requests
     def now(self) -> float:
         return time.perf_counter() - self._t0
+
+    def reset_clock(self) -> None:
+        """Make now() == 0 at this moment (benchmarks call this right before the first arrival)."""
+        self._t0 = time.perf_counter()
 
     def add_request(
         self,
@@ -139,6 +145,7 @@ class LLMEngine:
 
     # ---------------------------------------------------------------- one step
     def step(self, now: Optional[float] = None) -> list[RequestOutput]:
+        fixed_clock = now is not None
         now = self.now() if now is None else now
         bm, B = self.block_manager, self.block_size
         out = self.scheduler.schedule(now)
@@ -197,11 +204,15 @@ class LLMEngine:
                 query_lens=q_lens,
             )
             logits = self.model(torch.tensor(input_ids, device=dev), self.cache.gpu_cache, meta)
-            self._process(targets, logits, now)
+            # Timestamps for tokens/finishes are taken when the step ENDS (real clock), so
+            # latency includes the step's own compute time.
+            self._process(targets, logits, now if fixed_clock else self.now())
             self.num_steps += 1
+            self.num_running_sum += len(self.scheduler.running)
 
+        end = now if fixed_clock else self.now()
         for group in self.scheduler.free_finished_seq_groups():
-            finished.append(self._finish(group, now))
+            finished.append(self._finish(group, end))
         if self.check_invariants:
             bm.check_invariants(s for g in self._groups.values() for s in g.seqs)
         return finished

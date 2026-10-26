@@ -4,6 +4,10 @@ We have no local GPU. All GPU work runs as batch jobs (`sbatch`) on the college 
 
 ---
 
+## 0. Google Colab (T4)
+
+Colab gives us a **Tesla T4 (16 GB)**, not an A100. Use it for interactive correctness checks and Triton kernel debugging with OPT-125m / OPT-1.3B (`colab/run_prototype.ipynb`). OPT-13B does not fit; all reported measurements come from the cluster.
+
 ## 1. What we know about the cluster
 
 From a known-working job script (`run_large_dataset.sh`) and the cluster limits:
@@ -65,7 +69,7 @@ All in `slurm/`, all follow the same pattern as the known-working script (partit
 | `check_gpu.sbatch` | Environment sanity check | 1 / 4 / 15 min |
 | `test_gpu.sbatch` | `pytest -m gpu` (Triton kernel, e2e equivalence on GPU) | 1 / 4 / 30 min |
 | `serve_sweep.sbatch` | One system × one trace × all request rates (E1–E5, E7–E9) | 1 / 8 / 12 h default (override with `--time`) |
-| `kernel_bench.sbatch` *(to write in week 4)* | Kernel microbenchmark (E6) | 1 / 4 / 30 min |
+| (no script needed) `python benchmarks/kernel_bench.py` inside any GPU job | Kernel microbenchmark (E6) | 1 / 4 / 30 min |
 
 **Submitting a full experiment** = a job **array**, one array task per system:
 

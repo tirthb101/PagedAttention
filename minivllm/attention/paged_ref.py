@@ -47,6 +47,7 @@ class PagedPlan:
     decode_blocks: Optional[torch.Tensor]    # [S, max_blocks] padded block tables
     decode_mask: Optional[torch.Tensor]      # [S, 1, 1, max_blocks * block_size] valid keys
     num_tokens: int
+    decode_ctx: Optional[torch.Tensor] = None  # [S] context lengths of the decode sequences
 
 
 def plan_paged(block_tables: list[list[int]], context_lens: list[int], query_lens: list[int],
@@ -73,7 +74,7 @@ def plan_paged(block_tables: list[list[int]], context_lens: list[int], query_len
     blocks = torch.tensor(padded, device=device, dtype=torch.long)
     ctx_t = torch.tensor(dec_ctx, device=device)
     mask = torch.arange(max_blocks * block_size, device=device)[None, :] < ctx_t[:, None]
-    return PagedPlan(prefill, torch.tensor(dec_off, device=device), blocks, mask[:, None, None, :], offset)
+    return PagedPlan(prefill, torch.tensor(dec_off, device=device), blocks, mask[:, None, None, :], offset, ctx_t)
 
 
 def paged_attention(
@@ -85,6 +86,7 @@ def paged_attention(
     query_lens: list[int],           # per sequence: new tokens in this step (prefill: many, decode: 1)
     scale: float,
     plan: Optional[PagedPlan] = None,
+    backend: str = "ref",            # "ref": gather + PyTorch attention; "triton": in-place paged kernel (decode)
 ) -> torch.Tensor:
     """Causal attention where each sequence reads its K/V through its block table."""
     block_size, num_kv_heads, head_dim = key_cache.shape[1], key_cache.shape[2], key_cache.shape[3]
@@ -105,7 +107,12 @@ def paged_attention(
             q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1), attn_mask=mask, scale=scale)
         out[offset : offset + qlen] = o.transpose(0, 1)
 
-    if plan.decode_offsets is not None:
+    if plan.decode_offsets is not None and backend == "triton":
+        from minivllm.attention.paged_triton import paged_decode_attention
+
+        out[plan.decode_offsets] = paged_decode_attention(
+            query[plan.decode_offsets], key_cache, value_cache, plan.decode_blocks, plan.decode_ctx, scale)
+    elif plan.decode_offsets is not None:
         S = plan.decode_blocks.shape[0]
         k = key_cache[plan.decode_blocks].reshape(S, -1, num_kv_heads, head_dim)   # [S, L, Hkv, D]
         v = value_cache[plan.decode_blocks].reshape(S, -1, num_kv_heads, head_dim)

@@ -91,9 +91,11 @@ Deadline: **28 Nov 2026** — see [docs/PLAN.md](docs/PLAN.md).
 | Memory core: `config`, `sequence`, `block`, `block_manager`, `scheduler` | Done (22 Oct), pure Python |
 | **Working prototype:** paged attention (PyTorch reference), cache engine, OPT model, sampler, engine, demo | Done (26 Oct) — output matches HuggingFace token-for-token, including under preemption and parallel sampling |
 | Orca baselines (buddy allocator), traces, GPU-free memory simulator | Done (26 Oct) — reproduces Fig. 2: Oracle 38.2% vs paged 97.0% of memory used by real tokens |
-| GPU benchmarks (latency vs request rate), Triton kernel, beam search | Next |
+| Triton paged decode kernel (§5) + kernel benchmark (Fig. 18a) | Done (26 Oct) — matches the reference (checked in Triton's CPU interpreter); speed to be measured on GPU |
+| Serving benchmark `run_serving.py` + `plot.py` (Fig. 12–17) | Done (26 Oct) — smoke-tested on CPU; real runs on the cluster next |
+| Beam search, E3 memory-saving counter, WMT16 loader | Next |
 
-**72 tests pass** (≈30 s on a laptop CPU). The engine tests were checked by deliberately breaking the code (wrong slot, skipped swap or copy-on-write copy, no causal mask): each break makes a test fail.
+**82 tests pass** (≈1 min on a laptop CPU). The engine tests were checked by deliberately breaking the code (wrong slot, skipped swap or copy-on-write copy, no causal mask): each break makes a test fail.
 
 ### Run the prototype
 
@@ -106,7 +108,23 @@ python examples/demo.py --kv-blocks 8 --preemption swap        # tiny KV pool: p
 python examples/demo.py --n 3 --temperature 0.8 --no-check     # parallel sampling, shared prompt blocks
 ```
 
-On Google Colab: open `colab/run_prototype.ipynb` (GPU runtime) and run the cells.
+On Google Colab (T4 GPU): open `colab/run_prototype.ipynb` and run the cells — tests, demo, preemption, parallel sampling, Triton kernel benchmark, and a small paged-vs-Orca serving run.
+
+### Serving benchmark (latency vs request rate)
+
+```bash
+# smoke test anywhere
+python benchmarks/run_serving.py --tiny --trace synthetic-sharegpt --rates 2,8 --duration 10 --out results/smoke.csv
+# on a GPU: one CSV per system, then plot them together
+for mm in paged orca-oracle orca-pow2 orca-max; do
+  python benchmarks/run_serving.py --model facebook/opt-1.3b --trace sharegpt --rates 1,2,4,8 \
+      --duration 600 --kv-cache-gb 4 --memory-manager $mm --out results/e1/sharegpt_$mm.csv
+done
+python benchmarks/plot.py results/e1/*.csv --out results/e1_sharegpt.png
+python benchmarks/kernel_bench.py --model-dims opt-13b      # Fig. 18a
+```
+
+On the cluster, `slurm/serve_sweep.sbatch` runs exactly this as a job array (docs/CLUSTER.md).
 
 ### Memory simulator (no GPU, no download, ~10 s)
 

@@ -5,5 +5,6 @@ safetensors
 huggingface_hub[cli]
 numpy
 pandas
+pyarrow            # Alpaca parquet
 matplotlib
 pytest
