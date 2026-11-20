@@ -33,7 +33,7 @@ DURATION="${DURATION:-600}"                      # seconds of trace per rate; fi
 KV_GB="${KV_GB:-12}"
 BLOCK_SIZE="${BLOCK_SIZE:-16}"
 PREEMPTION="${PREEMPTION:-recompute}"
-EXTRA_ARGS="${EXTRA_ARGS:-}"                     # e.g. "--n 4" or "--beam 4" or "--prefix 5shot"
+EXTRA_ARGS="${EXTRA_ARGS:-}"                     # e.g. "--n 4", or "--beam 4" (paged only: set SYSTEM=paged)
 
 OUT="$PA_RESULTS/$EXP/${TRACE}_${SYSTEM}_bs${BLOCK_SIZE}_${PREEMPTION}.csv"
 mkdir -p "$(dirname "$OUT")"

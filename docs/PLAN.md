@@ -66,7 +66,7 @@ Owners: **A** = memory management + scheduler, **B** = model + attention + bench
 - [x] `reservation_manager.py`: Orca Oracle / Pow2 / Max (+ buddy rounding) + tests
 - [x] Parallel sampling (n = 2, 4, 6) with COW; memory-saving counter
 - [x] Shared prefix (`register_prefix`)
-- [ ] Beam search (fork/free every step)
+- [x] Beam search (fork/free every step) — done 20 Nov, `tests/test_beam_search.py`
 
 **B**
 - [x] `benchmarks/trace.py`: synthetic ShareGPT / Alpaca, real ShareGPT / Alpaca loaders, Poisson arrivals, fixed seeds

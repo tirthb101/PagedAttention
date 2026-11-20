@@ -39,6 +39,7 @@ class SamplingParams:
     max_tokens: int = 128          # max generated tokens per sequence
     ignore_eos: bool = False       # benchmarks force exact output lengths from the trace
     seed: Optional[int] = None
+    length_penalty: float = 1.0    # beam search: final score = cum_logprob / out_len**length_penalty
 
     def __post_init__(self) -> None:
         if self.n < 1:
@@ -49,6 +50,9 @@ class SamplingParams:
             raise ValueError("top_p must be in (0, 1]")
         if self.temperature < 0:
             raise ValueError("temperature must be >= 0")
+        if self.use_beam_search and (self.temperature != 0.0 or self.top_p != 1.0):
+            # Beam search is deterministic (as in vLLM): no temperature or nucleus sampling.
+            raise ValueError("beam search needs temperature=0 and top_p=1")
 
 
 class Sequence:

@@ -264,6 +264,8 @@ Our own OPT decoder (embeddings + learned positions, N decoder layers, final lay
 
 Greedy, temperature, top-p, and beam search. Beam search per group each step: score all `beam × vocab` continuations, keep top `beam` → for each kept candidate either reuse its parent sequence or `fork` it; free dropped parents. This is where ref counts and COW get exercised hardest.
 
+As implemented (`LLMEngine._beam_step`, `sampler.beam_candidates`): rank the best `2 × beam` candidates so that up to `beam` may end in EOS and `beam` live beams remain. EOS among the top `beam` becomes a finished hypothesis (token history only, no blocks). The request stops when `beam` hypotheses have finished (`early_stopping=True`) or at `max_tokens`, where live beams compete with the finished ones; final score = `cum_logprob / out_len**length_penalty`. These are HuggingFace's rules, so `tests/test_beam_search.py` compares against `generate(num_beams=…)` and a no-cache reference. Beam search needs `temperature=0`, `top_p=1` (as in vLLM) and the paged manager.
+
 ## 6. Engine loop (`engine.py`)
 
 ```python

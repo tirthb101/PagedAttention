@@ -20,7 +20,7 @@ CS612 Computer Systems — Project 2 (Part B: implement a paper end to end).
 | §4.1 PagedAttention | In scope — PyTorch reference first, Triton kernel second |
 | §4.2 KV cache manager (block tables, allocator) | In scope — core of the project |
 | §4.3 Decoding with on-demand block allocation | In scope |
-| §4.4 Parallel sampling, beam search, shared prefix (ref counts + copy-on-write) | In scope (beam search is the first thing cut if late) |
+| §4.4 Parallel sampling, beam search, shared prefix (ref counts + copy-on-write) | In scope, all implemented (beam search on the paged manager only) |
 | §4.5 Scheduling: FCFS, all-or-nothing preemption, swap and recompute | In scope |
 | §4.6 Distributed (tensor parallel, multi-GPU) | Stretch goal — the cluster allows 2 GPUs per job, so a 2-way version is possible if time remains (EXTENSIONS X6); otherwise explained in the talk |
 | §5 FastAPI / OpenAI-compatible frontend | Out of scope — a trace-replay script replaces it |
@@ -93,9 +93,10 @@ Deadline: **28 Nov 2026** — see [docs/PLAN.md](docs/PLAN.md).
 | Orca baselines (buddy allocator), traces, GPU-free memory simulator | Done (26 Oct) — reproduces Fig. 2: Oracle 38.2% vs paged 97.0% of memory used by real tokens |
 | Triton paged decode kernel (§5) + kernel benchmark (Fig. 18a) | Done (26 Oct) — matches the reference (checked in Triton's CPU interpreter); speed to be measured on GPU |
 | Serving benchmark `run_serving.py` + `plot.py` (Fig. 12–17) | Done (26 Oct) — smoke-tested on CPU; real runs on the cluster next |
-| Beam search, E3 memory-saving counter, WMT16 loader | Next |
+| Beam search (§4.4): fork / free / copy-on-write every step, `run_serving.py --beam W` | Done (20 Nov) — matches HuggingFace `generate(num_beams=…)` token-for-token, including with EOS and under swap preemption |
+| E3 memory-saving counter, WMT16 loader | Next |
 
-**82 tests pass** (≈1 min on a laptop CPU). The engine tests were checked by deliberately breaking the code (wrong slot, skipped swap or copy-on-write copy, no causal mask): each break makes a test fail.
+**99 tests pass** (≈1 min on a laptop CPU). The engine tests were checked by deliberately breaking the code (wrong slot, skipped swap or copy-on-write copy, no causal mask): each break makes a test fail.
 
 ### Run the prototype
 

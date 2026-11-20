@@ -9,6 +9,8 @@ Each step():
      block table.
   4. The model runs once over the whole batch (paged attention inside).
   5. Each sequence samples its next token; finished sequences free their blocks.
+     Beam-search requests instead pick their best `width` continuations across all beams:
+     kept beams fork (sharing blocks, copy-on-write later), dropped beams free their blocks.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from minivllm.memory import make_block_manager
 from minivllm.cache_engine import CacheEngine
 from minivllm.config import CacheConfig, ModelSpec, SchedulerConfig
 from minivllm.model.opt import InputMetadata, PagedOPT
-from minivllm.sampler import sample
+from minivllm.sampler import beam_candidates, sample
 from minivllm.scheduler import Scheduler
 from minivllm.sequence import SamplingParams, Sequence, SequenceGroup, SequenceStatus
 
@@ -120,8 +122,8 @@ class LLMEngine:
         true_output_len: Optional[int] = None,
         prefix_id: Optional[str] = None,
     ) -> None:
-        if params.use_beam_search:
-            raise NotImplementedError("beam search is not implemented yet (planned, §4.4)")
+        if params.use_beam_search and not self.block_manager.shares_prompt:
+            raise ValueError(f"beam search needs the paged memory manager, not {self.memory_manager!r}")
         tokens = self._encode(prompt)
         seqs = [Sequence(next(self._seq_counter), tokens, self.block_size) for _ in range(params.n)]
         group = SequenceGroup(
@@ -219,8 +221,18 @@ class LLMEngine:
 
     def _process(self, targets, logits: torch.Tensor, now: float) -> None:
         max_len = self.scheduler.config.max_model_len
+        beam_rows: dict[str, list[tuple[Sequence, torch.Tensor]]] = {}
+        groups: dict[str, SequenceGroup] = {}
         for (group, seqs), row in zip(targets, logits):
             params = group.sampling_params
+            groups[group.request_id] = group
+            if params.use_beam_search:
+                for seq in seqs:
+                    seq.num_computed_tokens = seq.get_len()
+                # In a prefill all beams are identical and share one logits row: expand only
+                # the first; the others get no children and are replaced by its forks.
+                beam_rows.setdefault(group.request_id, []).append((seqs[0], row))
+                continue
             gen = self._generators[group.request_id]
             for seq in seqs:
                 seq.num_computed_tokens = seq.get_len()
@@ -232,12 +244,82 @@ class LLMEngine:
                     seq.status = SequenceStatus.FINISHED_LENGTH
                 if seq.is_finished():
                     self.scheduler.free_seq(seq)
+        for rid, rows in beam_rows.items():
+            self._beam_step(groups[rid], rows)
+        for group in groups.values():
             if group.first_token_time is None:
                 group.first_token_time = now
             if group.prefix_id is not None:
                 prefix = self.block_manager.prefixes[group.prefix_id]
                 if not prefix.computed:
                     self.block_manager.mark_prefix_computed(group.prefix_id)
+
+    def _beam_step(self, group: SequenceGroup, parent_rows: list[tuple[Sequence, torch.Tensor]]) -> None:
+        """One beam-search step for one request (§4.4).
+
+        Rank all (beam, token) continuations, keep the best `width` that do not end in
+        EOS. A beam with one surviving child is extended in place; each extra child is a
+        fork that shares all of the parent's blocks (ref counts, copy-on-write on the next
+        write). A beam with no surviving child is dropped and its blocks are freed, so
+        blocks only reachable from dropped beams return to the pool at once.
+
+        Finished hypotheses (EOS among the top `width`) are kept as finished sequences
+        without blocks. The request ends when `width` hypotheses have finished (early
+        stopping) or the live beams reach max_tokens; then the best `width` by
+        cum_logprob / out_len**length_penalty are returned, best first.
+        """
+        params, width = group.sampling_params, group.sampling_params.n
+        bm = self.block_manager
+        children: dict[int, list[tuple[int, float]]] = {}
+        finished: list[tuple[Sequence, int, float]] = []
+        num_live = 0
+        for rank, (_, parent, token, logprob) in enumerate(beam_candidates(parent_rows, 2 * width)):
+            if not params.ignore_eos and token == self.eos_token_id:
+                if rank < width:
+                    finished.append((parent, token, logprob))
+                continue
+            children.setdefault(parent.seq_id, []).append((token, logprob))
+            num_live += 1
+            if num_live == width:
+                break
+
+        # Finished hypotheses: copy the token history only, no blocks.
+        for parent, token, logprob in finished:
+            hyp = parent.fork(next(self._seq_counter))
+            hyp.append_token(token, logprob)
+            hyp.status = SequenceStatus.FINISHED_STOPPED
+            group.add(hyp)
+
+        # Fork / extend / drop the live beams. Forks happen before the parent is extended.
+        for parent in group.get_seqs(SequenceStatus.RUNNING):
+            kids = children.get(parent.seq_id)
+            if not kids:
+                self.scheduler.free_seq(parent)
+                group.remove(parent.seq_id)
+                continue
+            for token, logprob in kids[1:]:
+                child = parent.fork(next(self._seq_counter))
+                bm.fork(parent, child)
+                child.append_token(token, logprob)
+                group.add(child)
+            parent.append_token(*kids[0])
+
+        live = group.get_seqs(SequenceStatus.RUNNING)
+        max_len = self.scheduler.config.max_model_len
+        num_finished = group.num_seqs(SequenceStatus.FINISHED_STOPPED)
+        early_stop = num_finished >= width
+        out_of_length = any(s.get_output_len() >= params.max_tokens or s.get_len() >= max_len for s in live)
+        if not (early_stop or out_of_length or not live):
+            return
+
+        # The request is done: choose the final `width` hypotheses. Beams that reached the
+        # length limit compete with the EOS hypotheses; after an early stop they are dropped.
+        for seq in live:
+            seq.status = SequenceStatus.FINISHED_LENGTH if out_of_length else SequenceStatus.FINISHED_ABORTED
+            self.scheduler.free_seq(seq)
+        pool = [s for s in group.seqs if s.status != SequenceStatus.FINISHED_ABORTED]
+        pool.sort(key=lambda s: s.cumulative_logprob / (s.get_output_len() ** params.length_penalty), reverse=True)
+        group.seqs = pool[:width]
 
     def _finish(self, group: SequenceGroup, now: float, aborted: bool = False) -> RequestOutput:
         group.finish_time = now
@@ -258,7 +340,8 @@ class LLMEngine:
             first_token_time=group.first_token_time,
             finish_time=now,
             num_preemptions=group.num_preemptions,
-            extra={"logprobs": [s.output_logprobs for s in group.seqs]},
+            extra={"logprobs": [s.output_logprobs for s in group.seqs],
+                   "cumulative_logprobs": [s.cumulative_logprob for s in group.seqs]},
         )
 
     # ---------------------------------------------------------------- helpers

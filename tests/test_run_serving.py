@@ -15,13 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from benchmarks.run_serving import load_model, run_one_rate  # noqa: E402
 
 
-@pytest.mark.parametrize("manager", ["paged", "orca-oracle"])
-def test_run_serving_smoke(manager):
+@pytest.mark.parametrize("manager,beam", [("paged", 0), ("orca-oracle", 0), ("paged", 3)])
+def test_run_serving_smoke(manager, beam):
     args = argparse.Namespace(
         tiny=True, model="tiny", trace="synthetic-alpaca", duration=2.0, num_requests=12, seed=0,
         max_model_len=2048, max_num_seqs=64, max_num_batched_tokens=2048, preemption="recompute",
         block_size=16, kv_cache_gb=0.01, swap_space_gb=0.01, num_gpu_blocks=256, memory_manager=manager,
-        attention_backend="ref", n=1, max_wall_factor=10.0,
+        attention_backend="ref", n=1, beam=beam, max_wall_factor=10.0,
     )
     model, tok = load_model(args)
     row = run_one_rate(model, tok, args, rate=8.0)

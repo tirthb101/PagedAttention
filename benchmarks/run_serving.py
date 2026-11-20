@@ -43,7 +43,7 @@ FIELDS = [
     "norm_latency_mean", "norm_latency_p50", "norm_latency_p90",
     "latency_mean", "ttft_mean", "throughput_req_s", "throughput_tok_s",
     "mean_batch", "preemptions", "wall_s", "block_size", "kv_cache_gb", "num_gpu_blocks",
-    "preemption_mode", "attention_backend", "n", "gpu", "seed",
+    "preemption_mode", "attention_backend", "n", "gpu", "seed", "beam",
 ]
 
 
@@ -89,7 +89,9 @@ def run_one_rate(model, tok, args, rate: float) -> dict:
             break
         while pending and pending[0].arrival_time <= now:
             r = pending.pop(0)
-            params = SamplingParams(n=args.n, temperature=0.0, max_tokens=r.output_len, ignore_eos=True)
+            beam = getattr(args, "beam", 0)
+            params = SamplingParams(n=beam or args.n, use_beam_search=beam > 0, temperature=0.0,
+                                    max_tokens=r.output_len, ignore_eos=True)
             engine.add_request(r.request_id, r.token_ids(vocab, args.seed), params,
                                arrival_time=r.arrival_time, true_output_len=r.output_len)
         if not engine.has_unfinished():
@@ -118,6 +120,7 @@ def run_one_rate(model, tok, args, rate: float) -> dict:
         "block_size": args.block_size, "kv_cache_gb": args.kv_cache_gb,
         "num_gpu_blocks": engine.block_manager.num_total_gpu_blocks,
         "preemption_mode": args.preemption, "attention_backend": args.attention_backend, "n": args.n,
+        "beam": getattr(args, "beam", 0),
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu", "seed": args.seed,
     }
     del engine
@@ -145,6 +148,7 @@ def main() -> None:
     ap.add_argument("--block-size", type=int, default=16)
     ap.add_argument("--preemption", choices=["recompute", "swap"], default="recompute")
     ap.add_argument("--n", type=int, default=1, help="parallel samples per request (E3)")
+    ap.add_argument("--beam", type=int, default=0, help="beam width per request (E3 beam search); paged only")
     ap.add_argument("--max-num-seqs", type=int, default=256)
     ap.add_argument("--max-num-batched-tokens", type=int, default=2048)
     ap.add_argument("--max-model-len", type=int, default=2048)
@@ -152,15 +156,21 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
+    if args.beam and args.n != 1:
+        ap.error("use either --n (parallel sampling) or --beam (beam search), not both")
+    if args.beam and args.memory_manager != "paged":
+        ap.error("--beam is implemented for the paged memory manager only")
 
     model, tok = load_model(args)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     new_file = not args.out.exists()
+    # Appending to a CSV written by an older version: keep its header (columns it lacks are dropped).
+    fields = FIELDS if new_file else next(csv.reader(args.out.open())) or FIELDS
     for rate in [float(r) for r in args.rates.split(",")]:
         print(f"[{time.strftime('%H:%M:%S')}] {args.memory_manager} rate={rate} ...", flush=True)
         row = run_one_rate(model, tok, args, rate)
         with args.out.open("a", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=FIELDS)
+            w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
             if new_file:
                 w.writeheader()
                 new_file = False

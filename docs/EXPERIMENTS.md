@@ -56,7 +56,7 @@ Outputs are forced to the trace's output length (`ignore_eos=True`) so that ever
 - **Script:** `run_serving.py --trace alpaca --n 2|4|6` and `--beam 2|4|6`, paged vs orca-oracle.
 - **Metrics:** normalized latency vs rate; **memory saving** = 1 − (blocks with sharing / blocks without sharing), from block-manager counters.
 - **Paper:** gain over Oracle 1.3× (n=1) → 2.3× (beam 6); saving 6.1–9.8% parallel, 37.6–55.2% beam (Alpaca); 16.2–30.5% / 44.3–66.3% (ShareGPT).
-- **Cut:** beam search part is optional (see PLAN cut order).
+- **Beam search** is implemented (20 Nov) for the paged manager only; the Orca baselines would need a full private copy per beam on every fork, which is not built. So the beam half can show paged memory saving (Fig. 15) but not the paged-vs-Orca latency curve (Fig. 14b). Runs are still optional (see PLAN cut order).
 
 ## E4 — Shared prefix (Fig. 16)
 
