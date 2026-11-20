@@ -117,13 +117,13 @@ If the queue is busy near the deadline: skip the final 1-hour pass and present t
 | Exp | Paper result | Our result | Matches? | Notes |
 | --- | --- | --- | --- | --- |
 | E0 | 20.4–38.2% vs ≈96% | Simulator, synthetic ShareGPT, OPT-13B 12 GB: Max 19.9%, Pow2 29.6%, Oracle 38.2%, paged 97.0% | Yes | 26 Oct; `results/e0_sharegpt.png`. Rerun with the real ShareGPT file |
-| E1 ShareGPT | 1.7–2.7× vs Oracle | | | |
-| E1 Alpaca | | | | |
-| E2 | 2.2× vs Oracle | Simulator (memory-bound, offline): 2.37× vs Oracle, 4.43× vs Max | Close | Simulator only; GPU run still needed |
+| E1 ShareGPT | 1.7–2.7× vs Oracle, 2.7–8× vs Max | OPT-13B, 10-min trace, L40S: saturated throughput paged 2.50 req/s vs Oracle 1.44 (**1.74×**), Pow2 1.12 (2.23×), Max 0.81 (**3.09×**). At 2 req/s: paged 0.055 s/tok vs Oracle 3.06. OPT-1.3B: 1.57× Oracle, 2.47× Max | Yes (low end of range) | 27 Oct, jobs 6919_0–3 / 6902_0–3, commit 88e0a17. `results/from_logs/e1_opt13b_sharegpt.png`. Orca-Max 13B at 3 req/s timed out (1552/1800). Quick pass only (10 min, not 1 h) |
+| E1 Alpaca | similar trend | OPT-1.3B only: paged / Oracle / Pow2 all unsaturated at 64 req/s; Max saturates at 21.5 req/s (paged ≥ **2.97×** Max) | Partial | 13B Alpaca **not run**; 1.3B needs rates > 64 to show the paged vs Oracle gap |
+| E2 | 2.2× vs Oracle, 4.3× vs Max | **GPU, OPT-13B ShareGPT** (mean running requests at highest rate): paged 34.1 vs Oracle 14.5 (**2.35×**), Pow2 10.4 (3.28×), Max 7.0 (**4.87×**). Simulator: 2.37× / 4.43× | Yes | `results/from_logs/e2_opt13b_sharegpt_batch_throughput.png` |
 | E3 parallel | 6.1–9.8% saved | | | |
 | E3 beam | 37.6–55.2% saved | | | |
 | E4 | 1.67× / 3.58× | | | |
-| E6 | +20–26% kernel time | | | |
+| E6 | +20–26% kernel time | Triton paged vs contiguous SDPA, OPT-13B dims: batch 32 **+2–10%**; batch 8 +28–108% at ctx ≤ 512 (launch overhead dominates, < 80 µs absolute), −8% at ctx 1024. PyTorch gather reference is 2.6–3.3× slower than Triton | Yes (overhead ≤ paper's at batch 32) | 26 Oct, job 6894, commit b163d12. Baseline is SDPA, not FasterTransformer. `results/from_logs/e6_kernel.png` |
 | E7 | best 16–128 | | | |
 | E8 | crossover ~16–64 | | | |
 | E9 | — (new) | | | |

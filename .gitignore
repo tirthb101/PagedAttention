@@ -6,3 +6,6 @@ slurm/cluster.env
 logs/*
 !logs/.gitkeep
 .pytest_cache/
+
+# Claude-generated reports and scratch (kept locally, not in the repo)
+Claude outputs/
