@@ -103,7 +103,7 @@ See [EXTENSIONS.md](EXTENSIONS.md).
 | E1–E2 dry run | OPT-1.3B | 1.5 |
 | E1–E2 quick pass | OPT-13B | 11 |
 | E1–E2 final pass (1-h traces) | OPT-13B | 56–70 |
-| E3 | OPT-13B | 3 |
+| E3 (beam only; parallel cut 21 Nov) | OPT-13B | 3 |
 | E4 | OPT-13B | 2 |
 | E6 | — | 0.5 |
 | E7–E8 | OPT-1.3B | 3 |
@@ -117,13 +117,13 @@ If the queue is busy near the deadline: skip the final 1-hour pass and present t
 | Exp | Paper result | Our result | Matches? | Notes |
 | --- | --- | --- | --- | --- |
 | E0 | 20.4–38.2% vs ≈96% | Simulator, synthetic ShareGPT, OPT-13B 12 GB: Max 19.9%, Pow2 29.6%, Oracle 38.2%, paged 97.0% | Yes | 26 Oct; `results/e0_sharegpt.png`. Rerun with the real ShareGPT file |
-| E1 ShareGPT | 1.7–2.7× vs Oracle, 2.7–8× vs Max | OPT-13B, 10-min trace, L40S: saturated throughput paged 2.50 req/s vs Oracle 1.44 (**1.74×**), Pow2 1.12 (2.23×), Max 0.81 (**3.09×**). At 2 req/s: paged 0.055 s/tok vs Oracle 3.06. OPT-1.3B: 1.57× Oracle, 2.47× Max | Yes (low end of range) | 27 Oct, jobs 6919_0–3 / 6902_0–3, commit 88e0a17. `results/from_logs/e1_opt13b_sharegpt.png`. Orca-Max 13B at 3 req/s timed out (1552/1800). Quick pass only (10 min, not 1 h) |
-| E1 Alpaca | similar trend | OPT-1.3B only: paged / Oracle / Pow2 all unsaturated at 64 req/s; Max saturates at 21.5 req/s (paged ≥ **2.97×** Max) | Partial | 13B Alpaca **not run**; 1.3B needs rates > 64 to show the paged vs Oracle gap |
-| E2 | 2.2× vs Oracle, 4.3× vs Max | **GPU, OPT-13B ShareGPT** (mean running requests at highest rate): paged 34.1 vs Oracle 14.5 (**2.35×**), Pow2 10.4 (3.28×), Max 7.0 (**4.87×**). Simulator: 2.37× / 4.43× | Yes | `results/from_logs/e2_opt13b_sharegpt_batch_throughput.png` |
-| E3 parallel | 6.1–9.8% saved | | | |
+| E1 ShareGPT | 1.7–2.7× vs Oracle, 2.7–8× vs Max | OPT-13B, 10-min trace, L40S: saturated throughput paged **2.52 req/s** (plateau confirmed: 2.51 at 4.0 and 2.52 at 5.0 req/s) vs Oracle 1.44 (**1.75×**), Pow2 1.12 (2.25×), Max 0.81 (**3.11×**). At 2 req/s: paged 0.055 s/tok vs Oracle 3.06. OPT-1.3B: 1.57× Oracle, 2.47× Max | Yes (low end of range) | 27 Oct jobs 6919_0–3 / 6902_0–3 (88e0a17); plateau job 7693, 20 Nov (c151a7c). `results/from_logs/e1_opt13b_sharegpt.png`. Orca-Max 13B at 3 req/s timed out (1552/1800). Quick pass only (10 min, not 1 h) |
+| E1 Alpaca | similar trend | **OPT-13B**, 10-min trace, rates 2–40 req/s: saturated throughput paged **35.7 req/s** vs Oracle 23.7 (**1.50×**), Pow2 15.3 (2.34×), Max 3.26 (**10.9×**). Capacity at ≤ 0.1 s/tok: paged 36, Oracle 20 (1.8×), Pow2 12 (3×), Max 2 (18×). OPT-1.3B: only Max saturates by 64 req/s (paged ≥ 2.97× Max) | Yes (gain vs Oracle smaller than ShareGPT, as expected for short sequences) | 20–21 Nov, jobs 7692 array + 7732 array (paged/Oracle 24–40), commit c151a7c. `results/from_logs/e1_opt13b_alpaca.png`. Orca-Max at ≥ 12 req/s hit the wall-time cap (~6240 finished) |
+| E2 | 2.2× vs Oracle, 4.3× vs Max | **GPU, OPT-13B ShareGPT** (peak mean running requests): paged 35.3 vs Oracle 14.5 (**2.43×**), Pow2 10.4 (3.39×), Max 7.0 (**5.04×**). **Alpaca 13B:** paged 175.7 vs Oracle 73.8 (2.38×), Pow2 41.2 (4.26×), Max 7.0 (25×). Simulator: 2.37× / 4.43× | Yes | `results/from_logs/e2_opt13b_{sharegpt,alpaca}_batch_throughput.png` |
+| E3 parallel | 6.1–9.8% saved | — | Cut | Decided 21 Nov: skipped to make time for X1. Parallel sampling itself is implemented and tested (fork / ref counts / COW), so it can still be shown as a correctness result |
 | E3 beam | 37.6–55.2% saved | | | |
 | E4 | 1.67× / 3.58× | | | |
 | E6 | +20–26% kernel time | Triton paged vs contiguous SDPA, OPT-13B dims: batch 32 **+2–10%**; batch 8 +28–108% at ctx ≤ 512 (launch overhead dominates, < 80 µs absolute), −8% at ctx 1024. PyTorch gather reference is 2.6–3.3× slower than Triton | Yes (overhead ≤ paper's at batch 32) | 26 Oct, job 6894, commit b163d12. Baseline is SDPA, not FasterTransformer. `results/from_logs/e6_kernel.png` |
-| E7 | best 16–128 | | | |
-| E8 | crossover ~16–64 | | | |
+| E7 | best 16–128 | OPT-1.3B ShareGPT, 12 req/s, 12 GB KV: normalized latency bs1 **7.0**, bs2 0.115, bs4 0.026, bs8 0.017, bs16 0.014, bs32 0.012, bs64–256 0.011–0.012 s/tok. Throughput 6.1 req/s at bs1, ≥ 11.8 from bs16 up | Mostly — small blocks clearly bad; flat from 32; no large-block penalty seen on ShareGPT | 20 Nov, jobs 7694–7711, c151a7c. `results/from_logs/e7_block_size.png`. Alpaca block sweep not run (paper's large-block penalty shows on Alpaca) |
+| E8b | recompute better at small blocks, swap at large | OPT-1.3B ShareGPT, 12 req/s, **1.5 GB KV** (forces 4–36k preemptions): recompute vs swap s/tok — bs4 8.84 vs 9.12, bs16 3.75 vs 3.97, bs64 **2.75** vs 2.99, bs256 7.53 vs **5.07**. Recompute wins by 3–8% up to bs64; swap wins by 33% at bs256 | Yes (qualitative crossover between 64 and 256) | 21 Nov, jobs 7724–7731, c151a7c. `results/from_logs/e8b_swap_vs_recompute.png`. At 12 GB (jobs 7694–7711) only bs1/bs2 preempt (recompute 0.115 vs swap 0.186 at bs2). Open: recompute at bs256 preempts 35.6k times vs 6.0k for swap (likely re-admission thrashing with only ~32 blocks). E8a microbenchmark cut |
 | E9 | — (new) | | | |

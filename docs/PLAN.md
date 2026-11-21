@@ -78,7 +78,7 @@ Owners: **A** = memory management + scheduler, **B** = model + attention + bench
 ## Week 4 — Fri 13 → Thu 19 Nov: full reproduction on OPT-13B
 
 **A**
-- [ ] E3 parallel sampling / beam search runs (Fig. 14–15)
+- [ ] E3 beam search runs (Fig. 15), optional — parallel-sampling runs (Fig. 14) cut 21 Nov
 - [ ] E4 shared prefix runs (Fig. 16)
 - [ ] E7 block-size sweep, E8 swap vs recompute (Fig. 18b, 19)
 
