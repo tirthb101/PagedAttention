@@ -27,7 +27,7 @@ from minivllm.memory import make_block_manager
 from minivllm.cache_engine import CacheEngine
 from minivllm.config import CacheConfig, ModelSpec, SchedulerConfig
 from minivllm.model.opt import InputMetadata, PagedOPT
-from minivllm.sampler import beam_candidates, sample
+from minivllm.sampler import beam_candidates, sample_batch
 from minivllm.scheduler import Scheduler
 from minivllm.sequence import SamplingParams, Sequence, SequenceGroup, SequenceStatus
 
@@ -153,7 +153,7 @@ class LLMEngine:
         else:
             base = self.seed * 1_000_003 + zlib.crc32(request_id.encode())
         for i, seq in enumerate(seqs if not params.use_beam_search else []):  # beam search is deterministic
-            self._generators[seq.seq_id] = torch.Generator().manual_seed((base + i * 0x9E3779B9) % 2**63)
+            self._generators[seq.seq_id] = torch.Generator(device=self.device).manual_seed((base + i * 0x9E3779B9) % 2**63)
         self._groups[request_id] = group
         self.scheduler.add_seq_group(group)
 
@@ -249,6 +249,22 @@ class LLMEngine:
         max_len = self.scheduler.config.max_model_len
         beam_rows: dict[str, list[tuple[Sequence, torch.Tensor]]] = {}
         groups: dict[str, SequenceGroup] = {}
+        # Sample every non-beam sequence of the step in one batched call (one host sync).
+        rows, owners = [], []
+        for k, (group, seqs) in enumerate(targets):
+            if not group.sampling_params.use_beam_search:
+                for seq in seqs:
+                    rows.append(k)
+                    owners.append(seq)
+        sampled: dict[int, tuple[int, float]] = {}
+        if rows:
+            row_idx = torch.tensor(rows, device=logits.device)
+            results = sample_batch(
+                logits.index_select(0, row_idx),
+                [targets[k][0].sampling_params for k in rows],
+                [self._generators[seq.seq_id] for seq in owners],
+            )
+            sampled = {seq.seq_id: r for seq, r in zip(owners, results)}
         for (group, seqs), row in zip(targets, logits):
             params = group.sampling_params
             groups[group.request_id] = group
@@ -261,7 +277,7 @@ class LLMEngine:
                 continue
             for seq in seqs:
                 seq.num_computed_tokens = seq.get_len()
-                token, logprob = sample(row, params, self._generators[seq.seq_id])
+                token, logprob = sampled[seq.seq_id]
                 seq.append_token(token, logprob)
                 if not params.ignore_eos and token == self.eos_token_id:
                     seq.status = SequenceStatus.FINISHED_STOPPED

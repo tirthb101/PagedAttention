@@ -35,6 +35,52 @@ def sample(logits: torch.Tensor, params: SamplingParams, generator: torch.Genera
     return token, float(torch.log(probs[token]))
 
 
+def sample_batch(
+    logits: torch.Tensor,
+    params: list[SamplingParams],
+    generators: list[torch.Generator | None],
+) -> list[tuple[int, float]]:
+    """Sample one token for every row of a [m, vocab] logits matrix, all on the logits device.
+
+    Same distribution as `sample`, but with a single host sync per step instead of one per
+    sequence. Random rows use the exponential-race form of categorical sampling:
+    argmax(p / E) with E ~ Exp(1) drawn from that row's own generator, so each sequence
+    consumes exactly `vocab` draws per step and its stream does not depend on batching.
+    Generators must live on the same device as `logits`.
+    """
+    m = logits.shape[0]
+    if m == 0:
+        return []
+    logits = logits.float()
+    temps = torch.tensor([p.temperature for p in params], device=logits.device, dtype=logits.dtype)
+    greedy = temps == 0.0
+    scaled = logits / torch.where(greedy, torch.ones_like(temps), temps)[:, None]
+    logprobs = torch.log_softmax(scaled, dim=-1)
+
+    top_ps = [p.top_p for p in params]
+    if any(tp < 1.0 for tp in top_ps):
+        probs = logprobs.exp()
+        top_p = torch.tensor(top_ps, device=logits.device, dtype=logits.dtype)
+        sorted_probs, sorted_idx = torch.sort(probs, dim=-1, descending=True)
+        keep_sorted = (sorted_probs.cumsum(-1) - sorted_probs) < top_p[:, None]  # always keeps the top token
+        keep = torch.zeros_like(keep_sorted).scatter(-1, sorted_idx, keep_sorted)
+        keep |= greedy[:, None]
+        logprobs = torch.log_softmax(scaled.masked_fill(~keep, float("-inf")), dim=-1)
+
+    scores = logprobs.clone()
+    rand_rows = (~greedy).nonzero().flatten().tolist() if not bool(greedy.all()) else []
+    if rand_rows:
+        noise = torch.empty((len(rand_rows), logits.shape[1]), device=logits.device, dtype=logits.dtype)
+        for j, i in enumerate(rand_rows):
+            noise[j].exponential_(generator=generators[i])
+        idx = torch.tensor(rand_rows, device=logits.device)
+        scores[idx] = logprobs[idx] - noise.log()  # argmax(log p - log E) == argmax(p / E)
+    tokens = scores.argmax(dim=-1)
+    token_lp = logprobs.gather(1, tokens[:, None]).squeeze(1)
+    out = torch.stack([tokens.to(logprobs.dtype), token_lp]).cpu()  # the one host sync
+    return [(int(t), float(lp)) for t, lp in zip(out[0].tolist(), out[1].tolist())]
+
+
 def beam_candidates(
     parent_rows: list[tuple[Sequence, torch.Tensor]], num_candidates: int
 ) -> list[tuple[float, Sequence, int, float]]:
