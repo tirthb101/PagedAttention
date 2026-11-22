@@ -49,6 +49,7 @@ class Scheduler:
         self.running: list[SequenceGroup] = []
         self.swapped: list[SequenceGroup] = []
         self.num_preemptions = 0
+        self.num_swap_fallbacks = 0  # swap preemptions done by recompute (CPU swap space full)
 
     # --------------------------------------------------------------- requests
     def add_seq_group(self, group: SequenceGroup) -> None:
@@ -132,9 +133,12 @@ class Scheduler:
                     self._ignore(group, out)
                     continue
                 n = group.get_max_num_running_seqs()
-                # Prefill tokens: the prompt is computed once even if n sequences share it.
-                new_tokens = seq.get_num_uncomputed_tokens()
-                if num_tokens + new_tokens > self.config.max_num_batched_tokens:
+                # Prefill tokens: the prompt is computed once if the n sequences share it
+                # (paged), n times if each has a private copy (Orca) or they diverged.
+                new_tokens = self._num_prefill_tokens(group.get_seqs(SequenceStatus.WAITING))
+                # A group larger than the token budget (e.g. Orca, n=6, long prompt) is still
+                # admitted when the batch is otherwise empty, so it cannot block the queue forever.
+                if num_tokens > 0 and num_tokens + new_tokens > self.config.max_num_batched_tokens:
                     break
                 if num_seqs + n > self.config.max_num_seqs:
                     break
@@ -149,18 +153,33 @@ class Scheduler:
                 self.running.append(group)
                 out.prefill_groups.append(group)
                 num_seqs += n
-                num_tokens += seq.get_num_uncomputed_tokens()  # after allocate: prefix may be cached
+                # After allocate: a cached prefix or shared blocks need no recompute.
+                num_tokens += self._num_prefill_tokens(group.get_seqs(SequenceStatus.RUNNING))
 
         out.num_batched_tokens = num_tokens
         return out
 
+    def _num_prefill_tokens(self, seqs) -> int:
+        """Tokens a prefill of these sequences (one group) puts in the batch; see LLMEngine.step."""
+        first = seqs[0]
+        if self.block_manager.shares_prompt and all(s.get_token_ids() == first.get_token_ids() for s in seqs[1:]):
+            return first.get_num_uncomputed_tokens()
+        return sum(s.get_num_uncomputed_tokens() for s in seqs)
+
     # ------------------------------------------------------------- preemption
     def _preempt(self, group: SequenceGroup, out: SchedulerOutputs) -> None:
         mode = self.config.preemption_mode
-        # Groups with several sequences share blocks; recomputing them would lose the
-        # sharing, so they are always swapped (vLLM makes the same choice).
+        # Groups with several sequences share blocks. Swapping keeps the sharing exactly;
+        # recomputing a diverged group re-shares only the full blocks of the common prefix
+        # and recomputes every sample's own tokens. So they are swapped when possible
+        # (vLLM makes the same choice).
         if group.get_max_num_running_seqs() > 1:
             mode = PreemptionMode.SWAP
+        # Not enough CPU swap space: fall back to recomputation instead of failing.
+        # (BlockSpaceManager.allocate re-shares the full blocks of the common prefix.)
+        if mode == PreemptionMode.SWAP and not self.block_manager.can_swap_out(group):
+            mode = PreemptionMode.RECOMPUTE
+            self.num_swap_fallbacks += 1
 
         if mode == PreemptionMode.RECOMPUTE:
             for seq in group.get_seqs(SequenceStatus.RUNNING):
@@ -168,10 +187,6 @@ class Scheduler:
                 seq.reset_for_recompute()
             self.waiting.appendleft(group)  # oldest victims end up at the very front
         else:
-            if not self.block_manager.can_swap_out(group):
-                raise RuntimeError(
-                    "CPU swap space exhausted; increase swap_space_gb or use recompute preemption"
-                )
             out.blocks_to_swap_out.update(self.block_manager.swap_out(group))
             for seq in group.get_seqs(SequenceStatus.RUNNING):
                 seq.status = SequenceStatus.SWAPPED

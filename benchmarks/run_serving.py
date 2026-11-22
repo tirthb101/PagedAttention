@@ -44,7 +44,16 @@ FIELDS = [
     "latency_mean", "ttft_mean", "throughput_req_s", "throughput_tok_s",
     "mean_batch", "preemptions", "wall_s", "block_size", "kv_cache_gb", "num_gpu_blocks",
     "preemption_mode", "attention_backend", "n", "gpu", "seed", "beam",
+    "temperature", "mem_saving_avg_pct", "mem_saving_max_pct", "mem_saving_blocks_pct", "swap_fallbacks",
 ]
+
+
+def sampling_temperature(args) -> float:
+    """Greedy for n=1 (as before); parallel samples must be random draws (paper §4.4)."""
+    t = getattr(args, "temperature", None)
+    if t is not None:
+        return t
+    return 1.0 if getattr(args, "n", 1) > 1 and not getattr(args, "beam", 0) else 0.0
 
 
 def load_model(args):
@@ -76,9 +85,9 @@ def run_one_rate(model, tok, args, rate: float) -> dict:
 
     # Warm-up (CUDA context, Triton compilation) outside the timed region.
     engine.generate([[5, 6, 7, 8]] * 2, SamplingParams(temperature=0.0, max_tokens=4, ignore_eos=True))
-    engine.num_running_sum = engine.num_steps = 0
-    engine.scheduler.num_preemptions = 0
+    engine.reset_stats()
 
+    temperature = sampling_temperature(args)
     pending = list(reqs)
     outputs = []
     deadline = args.duration * args.max_wall_factor + 120  # stop a hopelessly overloaded run
@@ -90,7 +99,8 @@ def run_one_rate(model, tok, args, rate: float) -> dict:
         while pending and pending[0].arrival_time <= now:
             r = pending.pop(0)
             beam = getattr(args, "beam", 0)
-            params = SamplingParams(n=beam or args.n, use_beam_search=beam > 0, temperature=0.0,
+            params = SamplingParams(n=beam or args.n, use_beam_search=beam > 0,
+                                    temperature=0.0 if beam else temperature,
                                     max_tokens=r.output_len, ignore_eos=True)
             engine.add_request(r.request_id, r.token_ids(vocab, args.seed), params,
                                arrival_time=r.arrival_time, true_output_len=r.output_len)
@@ -99,6 +109,7 @@ def run_one_rate(model, tok, args, rate: float) -> dict:
             continue
         outputs.extend(engine.step())
     wall = engine.now()
+    stats = engine.stats()
 
     done = [o for o in outputs if not o.aborted]
     norm = [(o.finish_time - o.arrival_time) / max(1, len(o.output_token_ids[0])) for o in done]
@@ -115,12 +126,15 @@ def run_one_rate(model, tok, args, rate: float) -> dict:
         "latency_mean": statistics.fmean(lat) if lat else math.nan,
         "ttft_mean": statistics.fmean(ttft) if ttft else math.nan,
         "throughput_req_s": len(done) / wall, "throughput_tok_s": out_tokens / wall,
-        "mean_batch": engine.num_running_sum / max(1, engine.num_steps),
-        "preemptions": engine.scheduler.num_preemptions, "wall_s": wall,
+        "mean_batch": stats["mean_batch"],
+        "preemptions": stats["preemptions"], "wall_s": wall,
         "block_size": args.block_size, "kv_cache_gb": args.kv_cache_gb,
         "num_gpu_blocks": engine.block_manager.num_total_gpu_blocks,
         "preemption_mode": args.preemption, "attention_backend": args.attention_backend, "n": args.n,
-        "beam": getattr(args, "beam", 0),
+        "beam": getattr(args, "beam", 0), "temperature": temperature,
+        # Memory saved by block sharing (paper Fig. 14/15); always 0 for the Orca baselines.
+        "mem_saving_avg_pct": stats["mem_saving_avg_pct"], "mem_saving_max_pct": stats["mem_saving_max_pct"],
+        "mem_saving_blocks_pct": stats["mem_saving_blocks_pct"], "swap_fallbacks": stats["swap_fallbacks"],
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu", "seed": args.seed,
     }
     del engine
@@ -149,6 +163,8 @@ def main() -> None:
     ap.add_argument("--preemption", choices=["recompute", "swap"], default="recompute")
     ap.add_argument("--n", type=int, default=1, help="parallel samples per request (E3)")
     ap.add_argument("--beam", type=int, default=0, help="beam width per request (E3 beam search); paged only")
+    ap.add_argument("--temperature", type=float, default=None,
+                    help="sampling temperature (default: 1.0 when --n > 1, else 0 = greedy)")
     ap.add_argument("--max-num-seqs", type=int, default=256)
     ap.add_argument("--max-num-batched-tokens", type=int, default=2048)
     ap.add_argument("--max-model-len", type=int, default=2048)
@@ -177,7 +193,8 @@ def main() -> None:
             w.writerow(row)
         print(f"   finished {row['finished']}/{row['num_requests']}  norm latency {row['norm_latency_mean']:.4f} s/tok  "
               f"throughput {row['throughput_req_s']:.2f} req/s  batch {row['mean_batch']:.1f}  "
-              f"preempt {row['preemptions']}  wall {row['wall_s']:.0f}s", flush=True)
+              f"preempt {row['preemptions']}  wall {row['wall_s']:.0f}s  "
+              f"mem saving avg {row['mem_saving_avg_pct']:.1f}% max {row['mem_saving_max_pct']:.1f}%", flush=True)
 
 
 if __name__ == "__main__":

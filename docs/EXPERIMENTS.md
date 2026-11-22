@@ -56,7 +56,8 @@ Outputs are forced to the trace's output length (`ignore_eos=True`) so that ever
 ## E3 — Parallel sampling and beam search (Fig. 14, 15)
 
 - **Script:** `run_serving.py --trace alpaca --n 2|4|6` and `--beam 2|4|6`, paged vs orca-oracle.
-- **Metrics:** normalized latency vs rate; **memory saving** = 1 − (blocks with sharing / blocks without sharing), from block-manager counters.
+- **Metrics:** normalized latency vs rate; **memory saving** = 1 − (blocks with sharing / blocks without sharing), from block-manager counters: `BlockSpaceManager.sharing_stats()` per model step (logical = sum of GPU block-table lengths, physical = distinct GPU blocks), averaged over steps by `LLMEngine.stats()`; `run_serving.py` writes `mem_saving_avg_pct`, `mem_saving_max_pct` (and block-weighted `mem_saving_blocks_pct`). Orca rows are 0 by construction.
+- **Status (22 Nov): code ready, not run.** Parallel: `sbatch slurm/e3_parallel.sbatch` (9 array tasks: n = 2/4/6 × paged / orca-oracle / orca-max; OPT-13B Alpaca; 3-min traces, 3 rates per n; ~3 GPU-h). Beam (optional): `sbatch slurm/e3_beam.sbatch` (paged, width 2/4/6, ~1–1.5 GPU-h). Parallel samples use temperature 1.0 with one RNG per sample (`--temperature` overrides).
 - **Paper:** gain over Oracle 1.3× (n=1) → 2.3× (beam 6); saving 6.1–9.8% parallel, 37.6–55.2% beam (Alpaca); 16.2–30.5% / 44.3–66.3% (ShareGPT).
 - **Beam search** is implemented (20 Nov) for the paged manager only; the Orca baselines would need a full private copy per beam on every fork, which is not built. So the beam half can show paged memory saving (Fig. 15) but not the paged-vs-Orca latency curve (Fig. 14b). Runs are still optional (see PLAN cut order).
 
@@ -105,7 +106,7 @@ See [EXTENSIONS.md](EXTENSIONS.md).
 | E1–E2 dry run | OPT-1.3B | 1.5 |
 | E1–E2 quick pass | OPT-13B | 11 |
 | E1–E2 final pass (1-h traces) | OPT-13B | 56–70 |
-| E3 (beam only; parallel cut 21 Nov) | OPT-13B | 3 |
+| E3 parallel (reinstated 22 Nov) + optional beam | OPT-13B | 3 + 1.5 |
 | E4 | OPT-13B | 2 |
 | E6 | — | 0.5 |
 | E7–E8 | OPT-1.3B | 3 |
@@ -122,8 +123,8 @@ If the queue is busy near the deadline: skip the final 1-hour pass and present t
 | E1 ShareGPT (Fig. 12) | 1.7–2.7× vs Oracle, 2.7–8× vs Max | OPT-13B, 10-min trace, L40S: saturated throughput paged **2.52 req/s** (plateau confirmed: 2.51 at 4.0 and 2.52 at 5.0 req/s) vs Oracle 1.44 (**1.75×**), Pow2 1.12 (2.25×), Max 0.81 (**3.11×**). At 2 req/s: paged 0.055 s/tok vs Oracle 3.06. OPT-1.3B: 1.57× Oracle, 2.47× Max | Yes (low end of range) | 27 Oct jobs 6919_0–3 / 6902_0–3 (88e0a17); plateau job 7693, 20 Nov (c151a7c). `results/fig12_latency_vs_rate/e1_opt13b_sharegpt.png`. Orca-Max 13B at 3 req/s timed out (1552/1800). Quick pass only (10 min, not 1 h). No FasterTransformer line (paged vs Orca Oracle/Pow2/Max only) |
 | E1 Alpaca (Fig. 12) | similar trend | **OPT-13B**, 10-min trace, rates 2–40 req/s: saturated throughput paged **35.7 req/s** vs Oracle 23.7 (**1.50×**), Pow2 15.3 (2.34×), Max 3.26 (**10.9×**). Capacity at ≤ 0.1 s/tok: paged 36, Oracle 20 (1.8×), Pow2 12 (3×), Max 2 (18×). OPT-1.3B: only Max saturates by 64 req/s (paged ≥ 2.97× Max) | Yes (gain vs Oracle smaller than ShareGPT, as expected for short sequences) | 20–21 Nov, jobs 7692 array + 7732 array (paged/Oracle 24–40), commit c151a7c. `results/fig12_latency_vs_rate/e1_opt13b_alpaca.png`. Orca-Max at ≥ 12 req/s hit the wall-time cap (~6240 finished). No FasterTransformer line (paged vs Orca Oracle/Pow2/Max only) |
 | E2 (Fig. 13) | 2.2× vs Oracle, 4.3× vs Max | **GPU, OPT-13B ShareGPT** (peak mean running requests): paged 35.3 vs Oracle 14.5 (**2.43×**), Pow2 10.4 (3.39×), Max 7.0 (**5.04×**). **Alpaca 13B:** paged 175.7 vs Oracle 73.8 (2.38×), Pow2 41.2 (4.26×), Max 7.0 (25×). Simulator: 2.37× / 4.43× | Yes | `results/fig13_batch_size/e2_opt13b_{sharegpt,alpaca}_batch_throughput.png` |
-| E3 parallel (Fig. 14) | 6.1–9.8% saved | — | Cut | Decided 21 Nov: skipped to make time for X1. Parallel sampling itself is implemented and tested (fork / ref counts / COW), so it can still be shown as a correctness result |
-| E3 beam (Fig. 15) | 37.6–55.2% saved | | | |
+| E3 parallel (Fig. 14) | 6.1–9.8% saved | — | Not run | Cut 21 Nov, reinstated 22 Nov: **code ready, not run** (`slurm/e3_parallel.sbatch`; memory-saving counter now in the CSV). Parallel sampling is tested on CPU (sharing / COW / free for n = 2, 4, 6; swap, recompute and fallback preemption; Orca private reservations) |
+| E3 beam (Fig. 15) | 37.6–55.2% saved | — | Not run | Code ready, not run (`slurm/e3_beam.sbatch`, paged only) |
 | E4 (Fig. 16) | 1.67× / 3.58× | | | |
 | E6 (Fig. 18a) | +20–26% kernel time (vs FasterTransformer, batch 8 and 32) | Triton paged vs contiguous SDPA, OPT-13B dims, at the paper's contexts 64/128/256: batch 32 **+4 / +3 / +9%**; batch 8 **+108 / +37 / +29%** (whole kernel only 12–40 µs, fixed launch overhead dominates). Beyond the paper's range: batch 32 +9–10% at ctx 512–1024; batch 8 +28% at 512, −8% at 1024. PyTorch gather reference is 2.6–3.3× slower than Triton | Partial: matches at batch 32 (smaller overhead), not at batch 8 | 26 Oct, job 6894, commit b163d12. Baseline is PyTorch SDPA, not FasterTransformer. `results/fig18a_kernel/e6_kernel.png`; side by side with the paper's figure: `results/fig18a_kernel/e6_vs_fig18a.png` |
 | E7 (Fig. 18b) | best 16–128 | OPT-1.3B ShareGPT, 12 req/s, 12 GB KV: normalized latency bs1 **7.0**, bs2 0.115, bs4 0.026, bs8 0.017, bs16 0.014, bs32 0.012, bs64–256 0.011–0.012 s/tok. Throughput 6.1 req/s at bs1, ≥ 11.8 from bs16 up | Mostly — small blocks clearly bad; flat from 32; no large-block penalty seen on ShareGPT | 20 Nov, jobs 7694–7711, c151a7c. `results/fig18b_block_size/e7_block_size.png`. Alpaca block sweep not run (paper's large-block penalty shows on Alpaca) |

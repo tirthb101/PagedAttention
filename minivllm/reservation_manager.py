@@ -250,6 +250,11 @@ class ReservationBlockManager:
             "free_blocks": self.buddy.num_free_blocks(),
         }
 
+    def sharing_stats(self) -> dict[str, float]:
+        """Same interface as BlockSpaceManager.sharing_stats: Orca never shares, so saving is 0."""
+        blocks = sum(n for _, n, _ in self.reservations.values())
+        return {"logical_blocks": blocks, "physical_blocks": blocks, "saving": 0.0}
+
     def check_invariants(self, seqs: Optional[Iterable[Sequence]] = None) -> None:
         covered = [0] * self.num_total_gpu_blocks
         for o, starts in self.buddy.free_lists.items():

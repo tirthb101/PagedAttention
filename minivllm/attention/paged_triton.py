@@ -75,18 +75,37 @@ def paged_decode_attention(
     query: torch.Tensor,          # [num_seqs, num_heads, head_dim], one new token per sequence
     key_cache: torch.Tensor,      # [num_blocks, block_size, num_kv_heads, head_dim]
     value_cache: torch.Tensor,
-    block_tables: torch.Tensor,   # [num_seqs, max_blocks] (int), padded
-    context_lens: torch.Tensor,   # [num_seqs] (int)
+    block_tables: torch.Tensor,   # [num_seqs, max_blocks] int32 (other int dtypes are converted), padded
+    context_lens: torch.Tensor,   # [num_seqs] int32 (other int dtypes are converted)
     scale: float,
+    out: torch.Tensor | None = None,   # optional preallocated [num_seqs, num_heads, head_dim] output
+    num_warps: int | None = None,      # None = Triton default (4)
+    num_stages: int | None = None,     # None = Triton default
 ) -> torch.Tensor:
+    """Launch the kernel. Does no GPU work besides the kernel itself when the caller passes
+    int32 block_tables/context_lens, a query/out whose last dim is contiguous, and (optionally)
+    `out`; this keeps the call CUDA-graph capturable and its host cost close to Triton's launcher.
+    """
     num_seqs, num_heads, head_dim = query.shape
     _, block_size, num_kv_heads, _ = key_cache.shape
     if head_dim & (head_dim - 1) or block_size & (block_size - 1):
         raise ValueError("Triton kernel needs power-of-two head_dim and block_size")
-    query = query.contiguous()
-    block_tables = block_tables.to(torch.int32).contiguous()
-    context_lens = context_lens.to(torch.int32).contiguous()
-    out = torch.empty_like(query)
+    # Each of these is a no-op (no copy, no kernel) when the input is already in the right form.
+    if query.stride(-1) != 1:
+        query = query.contiguous()
+    if block_tables.dtype != torch.int32 or block_tables.stride(-1) != 1:
+        block_tables = block_tables.to(torch.int32).contiguous()
+    if context_lens.dtype != torch.int32 or not context_lens.is_contiguous():
+        context_lens = context_lens.to(torch.int32).contiguous()
+    if out is None:
+        out = torch.empty_like(query)
+    elif out.shape != query.shape or out.dtype != query.dtype or out.stride(-1) != 1:
+        raise ValueError("out must have the query's shape and dtype and a contiguous last dim")
+    launch_opts = {}
+    if num_warps is not None:
+        launch_opts["num_warps"] = num_warps
+    if num_stages is not None:
+        launch_opts["num_stages"] = num_stages
     _paged_decode_kernel[(num_seqs, num_heads)](
         query, key_cache, value_cache, block_tables, context_lens, out,
         scale,
@@ -98,5 +117,6 @@ def paged_decode_attention(
         REP=num_heads // num_kv_heads,
         BLOCK_SIZE=block_size,
         HEAD_DIM=head_dim,
+        **launch_opts,
     )
     return out

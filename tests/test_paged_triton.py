@@ -20,9 +20,8 @@ from minivllm.attention.paged_triton import paged_decode_attention  # noqa: E402
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-@pytest.mark.parametrize("block_size", [1, 4, 16])
-@pytest.mark.parametrize("num_heads,num_kv_heads", [(4, 4), (8, 2)])
-def test_triton_decode_matches_reference(block_size, num_heads, num_kv_heads):
+def _make_case(block_size, num_heads, num_kv_heads):
+    """Random paged cache with scattered blocks; returns inputs plus the reference output."""
     torch.manual_seed(0)
     rng = random.Random(0)
     D, num_blocks = 32, 96
@@ -47,8 +46,51 @@ def test_triton_decode_matches_reference(block_size, num_heads, num_kv_heads):
     ref = paged_attention(q, k_cache, v_cache, tables, ctx_lens, [1] * len(ctx_lens), scale=D**-0.5)
     max_blocks = max(len(t) for t in tables)
     bt = torch.tensor([t + [0] * (max_blocks - len(t)) for t in tables], device=DEVICE)
-    out = paged_decode_attention(q, k_cache, v_cache, bt, torch.tensor(ctx_lens, device=DEVICE), D**-0.5)
+    cl = torch.tensor(ctx_lens, device=DEVICE)
     tol = 2e-3 if dtype == torch.float16 else 1e-5
+    return q, k_cache, v_cache, bt, cl, D**-0.5, ref, tol
+
+
+@pytest.mark.parametrize("block_size", [1, 4, 16])
+@pytest.mark.parametrize("num_heads,num_kv_heads", [(4, 4), (8, 2)])
+def test_triton_decode_matches_reference(block_size, num_heads, num_kv_heads):
+    q, k_cache, v_cache, bt, cl, scale, ref, tol = _make_case(block_size, num_heads, num_kv_heads)
+    out = paged_decode_attention(q, k_cache, v_cache, bt, cl, scale)   # int64 tables: wrapper converts
+    torch.testing.assert_close(out, ref, atol=tol, rtol=tol)
+
+
+@pytest.mark.parametrize("num_warps", [None, 1, 2])
+def test_triton_decode_out_param_int32_and_num_warps(num_warps):
+    """Preallocated out= (here a strided view), int32 metadata and num_warps give the same result."""
+    q, k_cache, v_cache, bt, cl, scale, ref, tol = _make_case(4, 8, 2)
+    big = torch.full((2 * q.shape[0], *q.shape[1:]), float("nan"), dtype=q.dtype, device=q.device)
+    out = big[::2]                                                     # non-contiguous along dim 0
+    ret = paged_decode_attention(q, k_cache, v_cache, bt.to(torch.int32), cl.to(torch.int32), scale,
+                                 out=out, num_warps=num_warps)
+    assert ret.data_ptr() == out.data_ptr()
+    torch.testing.assert_close(out, ref, atol=tol, rtol=tol)
+    assert torch.isnan(big[1::2]).all()                                # nothing written outside out
+
+
+def test_triton_decode_out_param_rejects_wrong_shape():
+    q, k_cache, v_cache, bt, cl, scale, _, _ = _make_case(4, 4, 4)
+    with pytest.raises(ValueError):
+        paged_decode_attention(q, k_cache, v_cache, bt, cl, scale, out=torch.empty_like(q[:-1]))
+
+
+@pytest.mark.skipif(DEVICE != "cuda", reason="CUDA graphs need a GPU")
+def test_triton_decode_cuda_graph_capture():
+    """With int32 metadata and out=, the call is capturable and replays to the same result."""
+    q, k_cache, v_cache, bt, cl, scale, ref, tol = _make_case(16, 8, 2)
+    bt, cl, out = bt.to(torch.int32), cl.to(torch.int32), torch.empty_like(q)
+    paged_decode_attention(q, k_cache, v_cache, bt, cl, scale, out=out)   # compile before capture
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        paged_decode_attention(q, k_cache, v_cache, bt, cl, scale, out=out)
+    out.zero_()
+    graph.replay()
+    torch.cuda.synchronize()
     torch.testing.assert_close(out, ref, atol=tol, rtol=tol)
 
 

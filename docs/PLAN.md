@@ -64,7 +64,8 @@ Owners: **A** = memory management + scheduler, **B** = model + attention + bench
 
 **A**
 - [x] `reservation_manager.py`: Orca Oracle / Pow2 / Max (+ buddy rounding) + tests
-- [x] Parallel sampling (n = 2, 4, 6) with COW; memory-saving counter
+- [x] Parallel sampling (n = 2, 4, 6) with COW — re-verified 22 Nov: per-sample RNG, recompute of diverged groups (re-shares common full blocks), swap→recompute fallback when swap space is full, Orca prefill budget counts n × prompt; `tests/test_parallel_sampling.py`
+- [x] Memory-saving counter — this box was ticked early but the counter only existed in the docs; implemented 22 Nov (`BlockSpaceManager.sharing_stats`, `LLMEngine.stats`, CSV columns `mem_saving_avg_pct` / `mem_saving_max_pct`), `tests/test_memory_saving.py`
 - [x] Shared prefix (`register_prefix`)
 - [x] Beam search (fork/free every step) — done 20 Nov, `tests/test_beam_search.py`
 
@@ -78,7 +79,8 @@ Owners: **A** = memory management + scheduler, **B** = model + attention + bench
 ## Week 4 — Fri 13 → Thu 19 Nov: full reproduction on OPT-13B
 
 **A**
-- [ ] E3 beam search runs (Fig. 15), optional — parallel-sampling runs (Fig. 14) cut 21 Nov
+- [ ] E3 parallel-sampling runs (Fig. 14a): cut 21 Nov, reinstated 22 Nov — code + `slurm/e3_parallel.sbatch` ready (OPT-13B Alpaca, n = 2/4/6, paged vs Orca Oracle/Max, ~3 GPU-h), **not run**
+- [ ] E3 beam search runs (Fig. 15), optional — `slurm/e3_beam.sbatch` ready (paged only), **not run**
 - [ ] E4 shared prefix runs (Fig. 16)
 - [ ] E7 block-size sweep, E8 swap vs recompute (Fig. 18b, 19)
 

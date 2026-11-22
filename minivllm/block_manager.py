@@ -75,9 +75,37 @@ class BlockSpaceManager:
         return self.prefixes[group.prefix_id].blocks
 
     # ---------------------------------------------------------------- admission
+    def _num_shared_blocks(self, group: SequenceGroup, seqs: list[Sequence]) -> int:
+        """How many leading blocks the waiting sequences of a group can share.
+
+        New requests (and recomputed groups whose sequences are still identical) share
+        every block, including a partial last block (copy-on-write later). Sequences that
+        already diverged (a parallel-sampling or beam-search group preempted by
+        recomputation, §4.5) share only the full blocks of their common token prefix,
+        and never a block holding the last token of the shortest sequence (each sequence
+        must recompute at least its last token to get logits to sample from).
+        """
+        first = seqs[0].get_token_ids()
+        others = [s.get_token_ids() for s in seqs[1:]]
+        if all(o == first for o in others):
+            return seqs[0].num_logical_blocks
+        common = 0
+        for i, tok in enumerate(first):
+            if any(i >= len(o) or o[i] != tok for o in others):
+                break
+            common += 1
+        min_len = min(s.get_len() for s in seqs)
+        num_shared = min(common, min_len - 1) // self.block_size
+        return max(num_shared, len(self._prefix_blocks_for(group)))
+
+    def _num_required_blocks(self, group: SequenceGroup, seqs: list[Sequence]) -> int:
+        num_shared = self._num_shared_blocks(group, seqs)
+        num_private = sum(s.num_logical_blocks - num_shared for s in seqs)
+        return num_shared + num_private - len(self._prefix_blocks_for(group))
+
     def can_allocate(self, group: SequenceGroup) -> AllocStatus:
-        seq = group.get_seqs(SequenceStatus.WAITING)[0]
-        num_required = seq.num_logical_blocks - len(self._prefix_blocks_for(group))
+        seqs = group.get_seqs(SequenceStatus.WAITING)
+        num_required = self._num_required_blocks(group, seqs)
         if self.num_total_gpu_blocks - num_required < self.watermark_blocks:
             return AllocStatus.NEVER
         if self.gpu_allocator.get_num_free_blocks() - num_required >= self.watermark_blocks:
@@ -87,35 +115,47 @@ class BlockSpaceManager:
     def allocate(self, group: SequenceGroup) -> None:
         """Allocate blocks for a waiting request's tokens.
 
-        All waiting sequences of the group have identical tokens (same prompt, or the
-        same prompt+outputs after recompute), so ONE set of physical blocks is
-        allocated and shared by all of them (§4.4 parallel sampling / beam search).
+        A new request's sequences have identical tokens (the prompt), so ONE set of
+        physical blocks is allocated and shared by all of them (§4.4 parallel sampling /
+        beam search); the first write to the shared partial last block copies it.
+
+        After recompute-preemption the sequences may have diverged: the full blocks of
+        their common prefix are shared again and only the rest is private. The first
+        sequence recomputes the shared blocks; the others start after them (their KV is
+        written by the first sequence earlier in the same model step, see LLMEngine.step).
         """
         seqs = group.get_seqs(SequenceStatus.WAITING)
         first = seqs[0]
-        assert all(s.get_token_ids() == first.get_token_ids() for s in seqs), "waiting seqs must share tokens"
+        num_shared = self._num_shared_blocks(group, seqs)
+        identical = num_shared == first.num_logical_blocks and all(
+            s.get_token_ids() == first.get_token_ids() for s in seqs[1:])
 
-        table: BlockTable = []
+        shared: BlockTable = []
         num_cached_tokens = 0
         if group.prefix_id is not None:
             prefix = self.prefixes[group.prefix_id]
             assert first.get_token_ids()[: len(prefix.token_ids)] == prefix.token_ids, "prompt does not start with prefix"
-            table.extend(prefix.blocks)
+            shared.extend(prefix.blocks)
             if prefix.computed:
                 num_cached_tokens = prefix.num_shared_tokens
             for block in prefix.blocks:
                 block.ref_count += len(seqs)
 
-        for _ in range(first.num_logical_blocks - len(table)):
+        for _ in range(num_shared - len(shared)):
             block = self.gpu_allocator.allocate()  # ref_count = 1
             block.ref_count = len(seqs)
-            table.append(block)
+            shared.append(block)
 
-        # Always recompute at least the last token: its logits are needed to sample.
-        num_cached_tokens = min(num_cached_tokens, first.get_len() - 1)
-        for seq in seqs:
-            self.block_tables[seq.seq_id] = list(table)
-            seq.num_computed_tokens = num_cached_tokens
+        for i, seq in enumerate(seqs):
+            table = list(shared)
+            for _ in range(seq.num_logical_blocks - num_shared):
+                table.append(self.gpu_allocator.allocate())
+            self.block_tables[seq.seq_id] = table
+            cached = num_cached_tokens
+            if i > 0 and not identical:
+                cached = max(cached, num_shared * self.block_size)
+            # Always recompute at least the last token: its logits are needed to sample.
+            seq.num_computed_tokens = min(cached, seq.get_len() - 1)
 
     # ----------------------------------------------------------------- decoding
     def can_append_slots(self, group: SequenceGroup) -> bool:
@@ -263,6 +303,26 @@ class BlockSpaceManager:
             "used_blocks": used_blocks,
             "free_blocks": self.gpu_allocator.get_num_free_blocks(),
         }
+
+    def sharing_stats(self) -> dict[str, float]:
+        """Memory saved by block sharing right now (paper Fig. 14/15 "memory saving").
+
+        logical  = sum over sequences holding GPU blocks of their block-table length
+                   (the blocks they would need if nothing were shared)
+        physical = distinct GPU blocks those tables point to
+        saving   = (logical - physical) / logical
+        Swapped-out sequences (CPU tables) and blocks pinned only by the prefix registry
+        are not counted.
+        """
+        logical = 0
+        physical: set[int] = set()
+        for table in self.block_tables.values():
+            if not table or table[0].device != Device.GPU:
+                continue
+            logical += len(table)
+            physical.update(id(b) for b in table)
+        saving = (logical - len(physical)) / logical if logical else 0.0
+        return {"logical_blocks": logical, "physical_blocks": len(physical), "saving": saving}
 
     def check_invariants(self, seqs: Optional[Iterable[Sequence]] = None) -> None:
         """Debug check run after every step in tests: catches leaks, double counts and bad tables."""

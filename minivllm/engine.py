@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import itertools
 import time
+import zlib
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
@@ -98,12 +99,23 @@ class LLMEngine:
         self.seed = seed
         self.check_invariants = check_invariants
         self._seq_counter = itertools.count()
-        self._generators: dict[str, torch.Generator] = {}
+        self._generators: dict[int, torch.Generator] = {}  # seq_id -> its own RNG
         self._groups: dict[str, SequenceGroup] = {}
         self._t0 = time.perf_counter()
+        self.reset_stats()
+
+    def reset_stats(self) -> None:
+        """Zero the per-run counters (benchmarks call this after warm-up)."""
         self.num_steps = 0
-        self.num_prefill_tokens = 0
-        self.num_running_sum = 0     # sum over steps of running requests -> mean batch size  # tokens computed in prefill (shows prefix reuse / recompute cost)
+        self.num_prefill_tokens = 0  # tokens computed in prefill (shows prefix reuse / recompute cost)
+        self.num_running_sum = 0     # sum over steps of running requests -> mean batch size
+        # Memory saved by block sharing (paper Fig. 14/15), sampled once per model step.
+        self.mem_saving_sum = 0.0
+        self.mem_saving_max = 0.0
+        self.logical_blocks_sum = 0
+        self.physical_blocks_sum = 0
+        self.scheduler.num_preemptions = 0
+        self.scheduler.num_swap_fallbacks = 0
 
     # ---------------------------------------------------------------- requests
     def now(self) -> float:
@@ -131,8 +143,14 @@ class LLMEngine:
             arrival_time=self.now() if arrival_time is None else arrival_time,
             true_output_len=true_output_len, prefix_id=prefix_id,
         )
-        gen = torch.Generator().manual_seed(self.seed if params.seed is None else params.seed)
-        self._generators[request_id] = gen
+        # One RNG per sequence, so the n samples are independent draws and each sample's
+        # stream does not depend on batching, preemption or the memory manager.
+        if params.seed is not None:
+            base = params.seed
+        else:
+            base = self.seed * 1_000_003 + zlib.crc32(request_id.encode())
+        for i, seq in enumerate(seqs if not params.use_beam_search else []):  # beam search is deterministic
+            self._generators[seq.seq_id] = torch.Generator().manual_seed((base + i * 0x9E3779B9) % 2**63)
         self._groups[request_id] = group
         self.scheduler.add_seq_group(group)
 
@@ -180,14 +198,18 @@ class LLMEngine:
 
         for group in out.prefill_groups:
             running = group.get_seqs(SequenceStatus.RUNNING)
-            if bm.shares_prompt:
+            first = running[0]
+            if bm.shares_prompt and all(s.get_token_ids() == first.get_token_ids() for s in running[1:]):
                 # All sequences of a new group share the prompt blocks: compute the prompt once,
                 # then sample one token per sequence from the same logits (parallel sampling).
-                first = running[0]
                 add_entry(first, first.num_computed_tokens, running, group)
                 self.num_prefill_tokens += q_lens[-1]
             else:
                 # Orca: every sequence has a private copy, so the prompt is computed n times.
+                # Paged, after recompute-preemption of a diverged group: the first sequence
+                # recomputes the shared blocks, the others only their private tail. Their
+                # attention reads the shared KV written earlier in this same step (every
+                # layer writes the KV of all batch tokens before attending).
                 for seq in running:
                     add_entry(seq, seq.num_computed_tokens, [seq], group)
                     self.num_prefill_tokens += q_lens[-1]
@@ -197,6 +219,7 @@ class LLMEngine:
                 add_entry(seq, seq.get_len() - 1, [seq], group)
 
         if targets:
+            self._record_sharing()
             dev = self.device
             meta = InputMetadata(
                 positions=torch.tensor(positions, device=dev),
@@ -233,10 +256,9 @@ class LLMEngine:
                 # the first; the others get no children and are replaced by its forks.
                 beam_rows.setdefault(group.request_id, []).append((seqs[0], row))
                 continue
-            gen = self._generators[group.request_id]
             for seq in seqs:
                 seq.num_computed_tokens = seq.get_len()
-                token, logprob = sample(row, params, gen)
+                token, logprob = sample(row, params, self._generators[seq.seq_id])
                 seq.append_token(token, logprob)
                 if not params.ignore_eos and token == self.eos_token_id:
                     seq.status = SequenceStatus.FINISHED_STOPPED
@@ -324,7 +346,8 @@ class LLMEngine:
     def _finish(self, group: SequenceGroup, now: float, aborted: bool = False) -> RequestOutput:
         group.finish_time = now
         self._groups.pop(group.request_id, None)
-        self._generators.pop(group.request_id, None)
+        for seq in group.seqs:
+            self._generators.pop(seq.seq_id, None)
         outs = [s.output_token_ids for s in group.seqs]
         texts = None
         if self.tokenizer is not None:
@@ -356,6 +379,30 @@ class LLMEngine:
             for o in self.step():
                 done[o.request_id] = o
         return [done[r] for r in ids]
+
+    def _record_sharing(self) -> None:
+        """Sample the block-sharing saving for this step (called once per model step)."""
+        st = self.block_manager.sharing_stats()
+        self.mem_saving_sum += st["saving"]
+        self.mem_saving_max = max(self.mem_saving_max, st["saving"])
+        self.logical_blocks_sum += st["logical_blocks"]
+        self.physical_blocks_sum += st["physical_blocks"]
+
+    def stats(self) -> dict[str, float]:
+        """Run counters. mem_saving_avg_pct is the per-step saving averaged over model steps
+        (time-weighted by step); mem_saving_blocks_pct weights each step by its logical blocks."""
+        steps = max(1, self.num_steps)
+        logical = self.logical_blocks_sum
+        return {
+            "num_steps": self.num_steps,
+            "mean_batch": self.num_running_sum / steps,
+            "num_prefill_tokens": self.num_prefill_tokens,
+            "preemptions": self.scheduler.num_preemptions,
+            "swap_fallbacks": self.scheduler.num_swap_fallbacks,
+            "mem_saving_avg_pct": 100.0 * self.mem_saving_sum / steps,
+            "mem_saving_max_pct": 100.0 * self.mem_saving_max,
+            "mem_saving_blocks_pct": 100.0 * (logical - self.physical_blocks_sum) / logical if logical else 0.0,
+        }
 
     def memory_stats(self) -> dict[str, int]:
         live = [s for g in self._groups.values() for s in g.seqs]
