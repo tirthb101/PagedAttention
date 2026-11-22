@@ -1,0 +1,19 @@
+system,model,trace,rate,num_requests,finished,timed_out,norm_latency_mean,throughput_req_s,mean_batch,preemptions,wall_s,block_size,preemption_mode,kv_cache_gb,gpu,job,git_commit,source
+paged,facebook/opt-1.3b,alpaca,32.0,4800,4800,0,0.0138,31.76,24.4,26,151,1,recompute,0.75,NVIDIA L40S,7755,7d2ed30,pa-e7-7755_17.out
+paged,facebook/opt-1.3b,alpaca,32.0,4800,4800,0,0.0099,31.86,18.0,0,151,2,recompute,0.75,NVIDIA L40S,7775,7d2ed30,pa-e7-7755_15.out
+paged,facebook/opt-1.3b,alpaca,32.0,4800,4800,0,0.0080,31.93,14.7,0,150,4,recompute,0.75,NVIDIA L40S,7773,7d2ed30,pa-e7-7755_13.out
+paged,facebook/opt-1.3b,alpaca,32.0,4800,4800,0,0.0074,31.96,13.5,0,150,8,recompute,0.75,NVIDIA L40S,7771,7d2ed30,pa-e7-7755_11.out
+paged,facebook/opt-1.3b,alpaca,32.0,4800,4800,0,0.0071,31.97,13.0,0,150,16,recompute,0.75,NVIDIA L40S,7751,7d2ed30,pa-e7-7751_1.out
+paged,facebook/opt-1.3b,alpaca,32.0,4800,4800,0,0.0070,31.97,12.7,0,150,32,recompute,0.75,NVIDIA L40S,7766,7d2ed30,pa-e7-7755_9.out
+paged,facebook/opt-1.3b,alpaca,32.0,4800,4800,0,0.0069,31.98,12.5,12,150,64,recompute,0.75,NVIDIA L40S,7761,7d2ed30,pa-e7-7755_5.out
+paged,facebook/opt-1.3b,alpaca,32.0,4800,4800,0,0.0070,31.98,12.7,105,150,128,recompute,0.75,NVIDIA L40S,7764,7d2ed30,pa-e7-7755_7.out
+paged,facebook/opt-1.3b,alpaca,32.0,4800,4800,0,0.1625,30.63,15.0,8458,157,256,recompute,0.75,NVIDIA L40S,7757,7d2ed30,pa-e7-7755_3.out
+paged,facebook/opt-1.3b,alpaca,48.0,7200,7200,0,0.3168,43.39,49.4,4592,166,1,recompute,0.75,NVIDIA L40S,7755,7d2ed30,pa-e7-7755_17.out
+paged,facebook/opt-1.3b,alpaca,48.0,7200,7200,0,0.0117,46.80,31.2,76,154,2,recompute,0.75,NVIDIA L40S,7775,7d2ed30,pa-e7-7755_15.out
+paged,facebook/opt-1.3b,alpaca,48.0,7200,7200,0,0.0093,47.02,25.2,4,153,4,recompute,0.75,NVIDIA L40S,7773,7d2ed30,pa-e7-7755_13.out
+paged,facebook/opt-1.3b,alpaca,48.0,7200,7200,0,0.0085,47.10,23.1,0,153,8,recompute,0.75,NVIDIA L40S,7771,7d2ed30,pa-e7-7755_11.out
+paged,facebook/opt-1.3b,alpaca,48.0,7200,7200,0,0.0082,47.13,22.1,0,153,16,recompute,0.75,NVIDIA L40S,7751,7d2ed30,pa-e7-7751_1.out
+paged,facebook/opt-1.3b,alpaca,48.0,7200,7200,0,0.0081,47.15,21.9,2,153,32,recompute,0.75,NVIDIA L40S,7766,7d2ed30,pa-e7-7755_9.out
+paged,facebook/opt-1.3b,alpaca,48.0,7200,7200,0,0.0081,47.16,21.6,228,153,64,recompute,0.75,NVIDIA L40S,7761,7d2ed30,pa-e7-7755_5.out
+paged,facebook/opt-1.3b,alpaca,48.0,7200,7200,0,0.0935,46.59,26.1,6647,155,128,recompute,0.75,NVIDIA L40S,7764,7d2ed30,pa-e7-7755_7.out
+paged,facebook/opt-1.3b,alpaca,48.0,7200,7200,0,1.9082,30.78,15.1,12657,234,256,recompute,0.75,NVIDIA L40S,7757,7d2ed30,pa-e7-7755_3.out
