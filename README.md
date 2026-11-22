@@ -67,9 +67,9 @@ PagedAttention/
 │   └── plot.py
 ├── tests/                     # unit tests + paged-vs-HuggingFace equivalence
 ├── slurm/                     # cluster.env.example, setup_env.sh, *.sbatch job scripts
-├── logs/                      # SLURM job logs
+├── logs/                      # SLURM job logs, sorted into one folder per paper figure (local only)
 ├── requirements.txt
-└── results/                   # CSVs and plots copied back from the cluster
+└── results/                   # one folder per paper figure (fig02_…, fig12_…, …); index in results/README.md
 ```
 
 ## Hardware and models
@@ -119,9 +119,9 @@ python benchmarks/run_serving.py --tiny --trace synthetic-sharegpt --rates 2,8 -
 # on a GPU: one CSV per system, then plot them together
 for mm in paged orca-oracle orca-pow2 orca-max; do
   python benchmarks/run_serving.py --model facebook/opt-1.3b --trace sharegpt --rates 1,2,4,8 \
-      --duration 600 --kv-cache-gb 4 --memory-manager $mm --out results/e1/sharegpt_$mm.csv
+      --duration 600 --kv-cache-gb 4 --memory-manager $mm --out results/fig12_latency_vs_rate/sharegpt_$mm.csv
 done
-python benchmarks/plot.py results/e1/*.csv --out results/e1_sharegpt.png
+python benchmarks/plot.py results/fig12_latency_vs_rate/sharegpt_*.csv --out results/fig12_latency_vs_rate/e1_sharegpt.png
 python benchmarks/kernel_bench.py --model-dims opt-13b      # Fig. 18a
 ```
 
@@ -131,7 +131,7 @@ On the cluster, `slurm/serve_sweep.sbatch` runs exactly this as a job array (doc
 
 ```bash
 pip install matplotlib
-python benchmarks/simulate_memory.py --plot results/e0_sharegpt.png   # paper Fig. 2 + Fig. 13 style chart
+python benchmarks/simulate_memory.py --plot results/fig02_memory_waste/e0_sharegpt.png   # paper Fig. 2 + Fig. 13 style chart
 python benchmarks/simulate_memory.py --trace alpaca --num-requests 2000
 ```
 

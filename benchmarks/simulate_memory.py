@@ -15,7 +15,7 @@ fits more requests.
 
     python benchmarks/simulate_memory.py                       # OPT-13B, 12 GB KV, synthetic ShareGPT
     python benchmarks/simulate_memory.py --trace alpaca --num-requests 2000
-    python benchmarks/simulate_memory.py --plot results/e0_memory.png --csv results/e0_memory.csv
+    python benchmarks/simulate_memory.py --plot results/fig02_memory_waste/e0_memory.png --csv results/fig02_memory_waste/e0_memory.csv
 """
 
 from __future__ import annotations

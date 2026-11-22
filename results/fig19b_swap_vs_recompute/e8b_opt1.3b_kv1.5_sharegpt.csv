@@ -1,0 +1,9 @@
+system,model,trace,rate,num_requests,finished,timed_out,norm_latency_mean,throughput_req_s,mean_batch,preemptions,wall_s,block_size,preemption_mode,kv_cache_gb,gpu,job,git_commit,source
+paged,facebook/opt-1.3b,sharegpt,12.0,7200,7200,0,8.8427,5.83,19.2,4138,1236,4,recompute,1.5,NVIDIA L40S,7724,c151a7c,pa-p4-reco-7724_0.out
+paged,facebook/opt-1.3b,sharegpt,12.0,7200,7200,0,3.7487,8.21,18.9,4317,877,16,recompute,1.5,NVIDIA L40S,7726,c151a7c,pa-p16-reco-7726_0.out
+paged,facebook/opt-1.3b,sharegpt,12.0,7200,7200,0,2.7484,8.92,17.8,5059,807,64,recompute,1.5,NVIDIA L40S,7728,c151a7c,pa-p64-reco-7728_0.out
+paged,facebook/opt-1.3b,sharegpt,12.0,7200,7200,0,7.5321,6.33,14.6,35561,1137,256,recompute,1.5,NVIDIA L40S,7730,c151a7c,pa-p256-reco-7730_0.out
+paged,facebook/opt-1.3b,sharegpt,12.0,7200,7200,0,9.1160,5.74,19.2,4156,1254,4,swap,1.5,NVIDIA L40S,7725,c151a7c,pa-p4-swap-7725_0.out
+paged,facebook/opt-1.3b,sharegpt,12.0,7200,7200,0,3.9654,8.06,18.8,4307,893,16,swap,1.5,NVIDIA L40S,7727,c151a7c,pa-p16-swap-7727_0.out
+paged,facebook/opt-1.3b,sharegpt,12.0,7200,7200,0,2.9886,8.74,17.8,4576,824,64,swap,1.5,NVIDIA L40S,7729,c151a7c,pa-p64-swap-7729_0.out
+paged,facebook/opt-1.3b,sharegpt,12.0,7200,7200,0,5.0702,7.47,14.3,6032,964,256,swap,1.5,NVIDIA L40S,7731,c151a7c,pa-p256-swap-7731_0.out
