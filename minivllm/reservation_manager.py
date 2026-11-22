@@ -13,8 +13,11 @@ contiguous, power-of-two-sized, aligned range of blocks. This produces all three
 of waste from §3.1:
 
     reserved slots          - space for tokens not generated yet
-    internal fragmentation  - space the sequence will never use (over-reservation, buddy rounding)
-    external fragmentation  - free blocks that can't be used because no free range is big enough
+    internal fragmentation  - space the policy reserved that the sequence will never use
+                              (over-reservation; ~0 for Oracle, which knows the true length)
+    external fragmentation  - buddy rounding to a power-of-two range, plus free blocks that
+                              can't be used because no free range is big enough
+                              (the paper's Fig. 2 "external fragmentation & others")
 
 The class has the same interface as BlockSpaceManager, so the Scheduler, Engine and
 simulator run unchanged; only the memory policy differs. There is no sharing: forked
@@ -114,6 +117,7 @@ class ReservationBlockManager:
         # seq_id -> (start block, n_blocks, final_len): final_len = tokens the sequence will really reach
         self.reservations: dict[int, tuple[int, int, int]] = {}
         self.prefixes: dict = {}
+        self.policy_slots: dict[int, int] = {}  # seq_id -> slots the policy reserved (pre-rounding)
         self.num_external_frag_events = 0  # admissions refused although enough blocks were free
 
     # ------------------------------------------------------------ reservation
@@ -170,6 +174,8 @@ class ReservationBlockManager:
                 b.ref_count = 1
             self.block_tables[seq.seq_id] = table
             self.reservations[seq.seq_id] = (start, 1 << order, final_len)
+            # Slots the *policy* asked for, before the buddy allocator rounds up to 2^order blocks.
+            self.policy_slots[seq.seq_id] = math.ceil(reserved / self.block_size) * self.block_size
             seq.num_computed_tokens = 0
 
     # ---------------------------------------------------------------- decoding
@@ -190,6 +196,7 @@ class ReservationBlockManager:
         if table is None:
             return
         start, _, _ = self.reservations.pop(seq.seq_id)
+        self.policy_slots.pop(seq.seq_id, None)
         for b in table:
             b.ref_count = 0
         self.buddy.free(start)
@@ -221,19 +228,24 @@ class ReservationBlockManager:
         return self.num_total_cpu_blocks
 
     def memory_stats(self, seqs: Iterable[Sequence]) -> dict[str, int]:
-        used = future = allocated = 0
+        used = future = allocated = internal = rounding = 0
         for seq in seqs:
             if seq.seq_id not in self.reservations:
                 continue
             _, n_blocks, final_len = self.reservations[seq.seq_id]
+            policy = self.policy_slots[seq.seq_id]
             allocated += n_blocks * self.block_size
             used += seq.get_len()
-            future += max(0, final_len - seq.get_len())  # will be filled later; the rest is internal fragmentation
+            future += max(0, final_len - seq.get_len())   # will be filled later
+            internal += policy - final_len                 # paper §3: reserved but never used (over-reservation)
+            rounding += n_blocks * self.block_size - policy  # buddy rounding to 2^order: paper counts it as "external & others"
         used_blocks = self.num_total_gpu_blocks - self.buddy.num_free_blocks()
         return {
             "allocated_slots": used_blocks * self.block_size,
             "used_slots": used,
             "reserved_future_slots": future,
+            "internal_frag_slots": internal,
+            "buddy_rounding_slots": rounding,
             "used_blocks": used_blocks,
             "free_blocks": self.buddy.num_free_blocks(),
         }

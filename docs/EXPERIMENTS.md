@@ -34,6 +34,8 @@ Outputs are forced to the trace's output length (`ignore_eos=True`) so that ever
 - **What:** replay the trace through each block manager (no model); every step record used slots / reserved slots, and the number of running requests.
 - **Paper:** existing systems use only 20.4–38.2% of KV memory for real tokens; vLLM ≈96% *(verify on figure)*.
 - **Expect:** paged ≫ Oracle > Pow2 > Max on utilisation and on batch size.
+- **Waste categories (paper §3 / Fig. 2):** *reserved* = slots for tokens not generated yet; *internal fragmentation* = slots the policy reserved that the request never uses (≈0 for Oracle, which knows the true length); *external fragmentation & others* = buddy rounding up to a power-of-two range + free blocks no request can use. Changed 22 Nov: buddy rounding was previously counted as internal; real-token shares are unchanged.
+- **Result (22 Nov, ShareGPT):** tokens / reserved / internal / external & others = paged 97.0 / 0 / 1.4 / 1.6 %, Oracle 38.2 / 25.5 / 0.6 / 35.6 %, Pow2 29.6 / 19.7 / 15.1 / 35.6 %, Max 19.9 / 13.3 / 57.7 / 9.2 %. Alpaca (2000 requests): Oracle 37.4 / 26.9 / 4.4 / 31.4 %.
 - **Why first:** runs on a laptop on Day 7, gives the talk's motivating chart before any GPU run.
 
 ## E1 — Basic sampling, latency vs request rate (Fig. 12) — **headline result**

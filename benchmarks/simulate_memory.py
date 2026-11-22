@@ -7,8 +7,8 @@ running sequence "generates" one token until it reaches its true output length.
 For every step it records how the KV cache memory is used:
     token states            slots holding real K/V
     reserved                slots reserved for tokens that will be generated later (Orca)
-    internal fragmentation  allocated slots that will never be used
-    free                    unallocated slots (when requests wait anyway, this is external fragmentation)
+    internal fragmentation  slots the policy reserved that will never be used (paper §3 definition)
+    external & others       buddy rounding + unallocated slots (paper Fig. 2 "external fragmentation & others")
 and how many requests run concurrently (batch size). With all requests arriving at once
 (offline mode, the default) memory is the bottleneck, so this directly shows why paging
 fits more requests.
@@ -100,11 +100,13 @@ def simulate(system: str, reqs: list[Request], block_size: int, num_gpu_blocks: 
         if sched.waiting:  # memory-bound moment: someone is waiting for space
             used = stats["used_slots"]
             future = stats.get("reserved_future_slots", 0)
-            internal = stats["allocated_slots"] - used - future
+            # Paper Fig. 2 categories: buddy rounding goes to "external & others", not internal.
+            rounding = stats.get("buddy_rounding_slots", 0)
+            internal = stats.get("internal_frag_slots", stats["allocated_slots"] - used - future)
             sums["token_states"] += used / total_slots
             sums["reserved"] += future / total_slots
             sums["internal_frag"] += internal / total_slots
-            sums["free"] += stats["free_blocks"] * block_size / total_slots
+            sums["free"] += (stats["free_blocks"] * block_size + rounding) / total_slots
             n_bound += 1
         res.batch_sizes.append(len(sched.running))
         if check:
@@ -126,23 +128,41 @@ def plot(results: list[SimResult], path: Path, title: str) -> None:
 
     names = [r.system for r in results]
     parts = [("token_states", "Token states", "#2b6cb0"), ("reserved", "Reserved (future tokens)", "#90cdf4"),
-             ("internal_frag", "Internal fragmentation", "#ed8936"), ("free", "Free / external frag.", "#cbd5e0")]
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.2), gridspec_kw={"width_ratios": [3, 2]})
+             ("internal_frag", "Internal fragmentation", "#ed8936"), ("free", "External frag. & others", "#cbd5e0")]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.6), gridspec_kw={"width_ratios": [3, 2]})
+    text_color = {"token_states": "white", "reserved": "#1a365d", "internal_frag": "white", "free": "#2d3748"}
     left = [0.0] * len(results)
+    small = [[] for _ in results]  # thin segments per row: (centre x, value, key), labelled above the bar
     for key, label, color in parts:
         vals = [100 * r.frac[key] for r in results]
-        ax1.barh(names, vals, left=left, color=color, label=label)
+        ax1.barh(names, vals, left=left, color=color, label=label, height=0.6)
         for i, (v, l) in enumerate(zip(vals, left)):
-            if key == "token_states":
-                ax1.text(l + v / 2, i, f"{v:.0f}%", va="center", ha="center", color="white", fontsize=9)
+            if v < 0.05:
+                continue  # empty segment (e.g. paged has no reservation)
+            if v >= 6:  # wide enough: label inside the segment
+                ax1.text(l + v / 2, i, f"{v:.1f}%", va="center", ha="center",
+                         color=text_color[key], fontsize=8, fontweight="bold")
+            else:
+                small[i].append((l + v / 2, v, key))
         left = [l + v for l, v in zip(left, vals)]
+    for i, segs in enumerate(small):
+        # Spread labels so neighbours are >= 7 units apart, keeping them inside the axis; draw a leader to each segment.
+        xs = [min(x, 97.0) for x, _, _ in segs]
+        for j in range(len(xs) - 2, -1, -1):
+            xs[j] = min(xs[j], xs[j + 1] - 7)
+        for j in range(len(xs)):  # then push right again if that ran off the left edge
+            xs[j] = max(xs[j], 2.5 if j == 0 else xs[j - 1] + 7)
+        for (x, v, key), tx in zip(segs, xs):
+            c = "#c05621" if key == "internal_frag" else "#4a5568"
+            ax1.annotate(f"{v:.1f}%", xy=(x, i - 0.3), xytext=(tx, i - 0.52), ha="center", va="bottom",
+                         fontsize=7, color=c, arrowprops=dict(arrowstyle="-", color=c, lw=0.7))
     ax1.set_xlim(0, 100)
-    ax1.invert_yaxis()
+    ax1.set_ylim(len(results) - 0.5, -0.85)  # inverted, with headroom for labels above the top bar
     ax1.set_xlabel("% of KV cache memory (while requests wait for memory)")
     ax1.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=4, frameon=False, fontsize=8)
     ax1.set_title("How KV cache memory is used")
 
-    ax2.barh(names, [r.mean_batch for r in results], color="#2b6cb0")
+    ax2.barh(names, [r.mean_batch for r in results], color="#2b6cb0", height=0.6)
     for i, r in enumerate(results):
         ax2.text(r.mean_batch, i, f" {r.mean_batch:.1f}", va="center", fontsize=9)
     ax2.set_xlim(0, max(r.mean_batch for r in results) * 1.18)
