@@ -7,6 +7,9 @@ Analogy with OS virtual memory (CSAPP Ch 9):
     demand paging   -> append_slot() allocates a block only when the last one is full
     fork() + COW    -> fork() shares blocks; append_slot() copies a shared block on write
     swap to disk    -> swap_out()/swap_in() move a request's blocks to/from CPU memory
+    page cache      -> (extension X1) full blocks are registered by content hash; freed
+                       ones stay cached on an LRU list and are reused by later requests
+                       with the same prefix (enable_prefix_caching=True)
 
 This class only does bookkeeping with block numbers. It never touches tensors; the
 CacheEngine performs the copies it asks for (blocks_to_copy / swap mappings).
@@ -19,7 +22,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
-from minivllm.block import BlockAllocator, Device, PhysicalBlock
+from minivllm.block import BlockAllocator, CachingBlockAllocator, Device, PhysicalBlock
 from minivllm.sequence import Sequence, SequenceGroup, SequenceStatus
 
 BlockTable = list[PhysicalBlock]
@@ -55,15 +58,22 @@ class BlockSpaceManager:
         num_gpu_blocks: int,
         num_cpu_blocks: int,
         watermark: float = 0.01,
+        enable_prefix_caching: bool = False,
     ) -> None:
         self.block_size = block_size
         self.num_total_gpu_blocks = num_gpu_blocks
         self.num_total_cpu_blocks = num_cpu_blocks
         self.watermark_blocks = int(watermark * num_gpu_blocks)
-        self.gpu_allocator = BlockAllocator(Device.GPU, block_size, num_gpu_blocks)
+        self.enable_prefix_caching = enable_prefix_caching
+        gpu_cls = CachingBlockAllocator if enable_prefix_caching else BlockAllocator
+        self.gpu_allocator = gpu_cls(Device.GPU, block_size, num_gpu_blocks)
         self.cpu_allocator = BlockAllocator(Device.CPU, block_size, num_cpu_blocks)
         self.block_tables: dict[int, BlockTable] = {}
         self.prefixes: dict[str, Prefix] = {}
+        # X1: per-sequence chain of full-block hashes (a pure function of the tokens; tokens
+        # are only ever appended, so the list is extended incrementally).
+        self._seq_hashes: dict[int, list[int]] = {}
+        self.reset_cache_stats()
 
     # ------------------------------------------------------------------ helpers
     def _allocator(self, block: PhysicalBlock) -> BlockAllocator:
@@ -73,6 +83,72 @@ class BlockSpaceManager:
         if group.prefix_id is None:
             return []
         return self.prefixes[group.prefix_id].blocks
+
+    # ------------------------------------------------------- prefix caching (X1)
+    def reset_cache_stats(self) -> None:
+        self.cache_query_tokens = 0   # prompt tokens of admitted requests (incl. re-admissions)
+        self.cache_hit_tokens = 0     # of those, tokens whose KV was found in the cache
+        if self.enable_prefix_caching:
+            self.gpu_allocator.num_evictions = 0
+
+    def _block_hashes(self, seq: Sequence, num_blocks: int) -> list[int]:
+        """Hashes of the first `num_blocks` full blocks: h_i = hash(h_{i-1}, tokens of block i).
+
+        Chaining the parent hash makes equal hashes mean equal *prefixes*, not just equal
+        16-token chunks, so a hit at block i implies the whole history up to i matches.
+        """
+        memo = self._seq_hashes.setdefault(seq.seq_id, [])
+        if len(memo) < num_blocks:
+            tokens = seq.get_token_ids()
+            B = self.block_size
+            while len(memo) < num_blocks:
+                i = len(memo)
+                parent = memo[-1] if memo else 0
+                memo.append(hash((parent, tuple(tokens[i * B:(i + 1) * B]))))
+        return memo[:num_blocks]
+
+    def _cache_hits(self, group: SequenceGroup, seqs: list[Sequence]) -> BlockTable:
+        """Cached blocks matching the leading full blocks of a waiting request's tokens.
+
+        Only blocks entirely inside the first len-1 tokens are looked up: the last token
+        is always recomputed (its logits are needed), and it must never be written into a
+        shared cached block. Requests using a predefined prefix (§4.4) and diverged
+        groups (recompute-preempted parallel samples) are not looked up.
+        """
+        if not self.enable_prefix_caching or group.prefix_id is not None:
+            return []
+        first = seqs[0]
+        tokens = first.get_token_ids()
+        if any(s.get_token_ids() != tokens for s in seqs[1:]):
+            return []
+        hits: BlockTable = []
+        for h in self._block_hashes(first, (first.get_len() - 1) // self.block_size):
+            block = self.gpu_allocator.lookup(h)
+            if block is None:
+                break
+            hits.append(block)
+        return hits
+
+    def _register_full_blocks(self, seq: Sequence, table: BlockTable, num_full: int) -> None:
+        if not self.enable_prefix_caching:
+            return
+        for block, h in zip(table[:num_full], self._block_hashes(seq, num_full)):
+            if block.device == Device.GPU:
+                self.gpu_allocator.register(block, h)
+
+    def cache_stats(self) -> dict[str, float]:
+        if not self.enable_prefix_caching:
+            return {"cache_hit_tokens": 0, "cache_query_tokens": 0, "cache_hit_rate": 0.0,
+                    "cache_evictions": 0, "cached_blocks": 0, "evictable_blocks": 0}
+        q = self.cache_query_tokens
+        return {
+            "cache_hit_tokens": self.cache_hit_tokens,
+            "cache_query_tokens": q,
+            "cache_hit_rate": self.cache_hit_tokens / q if q else 0.0,
+            "cache_evictions": self.gpu_allocator.num_evictions,
+            "cached_blocks": len(self.gpu_allocator.cached),
+            "evictable_blocks": self.gpu_allocator.get_num_evictable_blocks(),
+        }
 
     # ---------------------------------------------------------------- admission
     def _num_shared_blocks(self, group: SequenceGroup, seqs: list[Sequence]) -> int:
@@ -106,6 +182,9 @@ class BlockSpaceManager:
     def can_allocate(self, group: SequenceGroup) -> AllocStatus:
         seqs = group.get_seqs(SequenceStatus.WAITING)
         num_required = self._num_required_blocks(group, seqs)
+        # X1: cache hits on blocks other requests are using cost no memory. (Hits on
+        # evictable blocks do: those blocks are counted as free.)
+        num_required -= sum(1 for b in self._cache_hits(group, seqs) if b.ref_count > 0)
         if self.num_total_gpu_blocks - num_required < self.watermark_blocks:
             return AllocStatus.NEVER
         if self.gpu_allocator.get_num_free_blocks() - num_required >= self.watermark_blocks:
@@ -141,6 +220,16 @@ class BlockSpaceManager:
             for block in prefix.blocks:
                 block.ref_count += len(seqs)
 
+        # X1: map cached blocks first (before any allocation can evict them).
+        hits = self._cache_hits(group, seqs)
+        for block in hits:
+            self.gpu_allocator.acquire(block, len(seqs))
+            shared.append(block)
+        num_cached_tokens = max(num_cached_tokens, len(hits) * self.block_size)
+        if self.enable_prefix_caching:
+            self.cache_query_tokens += first.get_len()
+            self.cache_hit_tokens += len(hits) * self.block_size
+
         for _ in range(num_shared - len(shared)):
             block = self.gpu_allocator.allocate()  # ref_count = 1
             block.ref_count = len(seqs)
@@ -156,6 +245,10 @@ class BlockSpaceManager:
                 cached = max(cached, num_shared * self.block_size)
             # Always recompute at least the last token: its logits are needed to sample.
             seq.num_computed_tokens = min(cached, seq.get_len() - 1)
+            # X1: every full block is computed by the end of this step, so publish it now.
+            # A request admitted later in this same step may hit it: each layer writes the
+            # KV of all batch tokens before attending (see LLMEngine.step).
+            self._register_full_blocks(seq, table, seq.get_len() // self.block_size)
 
     # ----------------------------------------------------------------- decoding
     def can_append_slots(self, group: SequenceGroup) -> bool:
@@ -172,6 +265,10 @@ class BlockSpaceManager:
         if len(table) < seq.num_logical_blocks:
             # Last block is full: demand-allocate a new one.
             assert len(table) == seq.num_logical_blocks - 1, "a sequence grows by at most one block per step"
+            # X1: the previous last block just became full (all its tokens are computed):
+            # publish it, so e.g. the next turn of a chat can reuse the generated answer.
+            if self.enable_prefix_caching and table[-1].device == Device.GPU:
+                self.gpu_allocator.register(table[-1], self._block_hashes(seq, len(table))[-1])
             table.append(self.gpu_allocator.allocate())
             return None
 
@@ -195,9 +292,12 @@ class BlockSpaceManager:
 
     def free(self, seq: Sequence) -> None:
         table = self.block_tables.pop(seq.seq_id, None)
+        self._seq_hashes.pop(seq.seq_id, None)
         if table is None:
             return  # never allocated, or already freed
-        for block in table:
+        # X1: free the tail first, so it is evicted before the prefix it depends on
+        # (a cached block is useless once one of its ancestors is gone).
+        for block in (reversed(table) if self.enable_prefix_caching else table):
             self._allocator(block).free(block)
 
     # ----------------------------------------------------------------- swapping
@@ -342,11 +442,20 @@ class BlockSpaceManager:
         for alloc in (self.gpu_allocator, self.cpu_allocator):
             free_ids = [id(b) for b in alloc.free_blocks]
             assert len(free_ids) == len(set(free_ids)), f"{alloc.device.name} free list has duplicates"
+            evictable = {id(b) for b in getattr(alloc, "evictor", {}).values()}
+            free_set = set(free_ids)
+            assert not (free_set & evictable), "a block is both free and evictable"
             for block in alloc.blocks:
                 expected = refs.get(id(block), 0)
                 assert block.ref_count == expected, f"{block}: ref_count {block.ref_count} != {expected} table references"
-                on_free_list = id(block) in set(free_ids)
+                on_free_list = id(block) in free_set or id(block) in evictable
                 assert on_free_list == (expected == 0), f"{block}: free-list membership wrong"
+                if id(block) in free_set:
+                    assert block.content_hash is None, f"{block} is free but still cached"
+                if id(block) in evictable:
+                    assert block.content_hash is not None, f"{block} is evictable but not cached"
+            for h, block in getattr(alloc, "cached", {}).items():
+                assert block.content_hash == h, f"{block}: cache table hash mismatch"
         assert set(by_id) <= {id(b) for a in (self.gpu_allocator, self.cpu_allocator) for b in a.blocks}
 
         if seqs is not None:

@@ -62,6 +62,7 @@ class LLMEngine:
         watermark: float = 0.01,
         memory_manager: str = "paged",          # "paged" | "orca-oracle" | "orca-pow2" | "orca-max"
         attention_backend: str = "ref",         # "ref" (PyTorch) | "triton" (paged decode kernel)
+        enable_prefix_caching: bool = False,    # extension X1: automatic prefix caching (paged only)
         seed: int = 0,
         check_invariants: bool = False,
     ) -> None:
@@ -89,7 +90,7 @@ class LLMEngine:
             scheduler_config = SchedulerConfig(max_model_len=max_len, max_num_batched_tokens=max(2048, max_len))
         self.memory_manager = memory_manager
         self.block_manager = make_block_manager(memory_manager, block_size, n_gpu, n_cpu, watermark,
-                                                scheduler_config.max_model_len)
+                                                scheduler_config.max_model_len, enable_prefix_caching)
         self.scheduler = Scheduler(scheduler_config, self.block_manager)
         self.cache = CacheEngine(
             self.spec.num_layers, self.spec.num_kv_heads, self.spec.head_dim,
@@ -116,6 +117,8 @@ class LLMEngine:
         self.physical_blocks_sum = 0
         self.scheduler.num_preemptions = 0
         self.scheduler.num_swap_fallbacks = 0
+        if hasattr(self.block_manager, "reset_cache_stats"):
+            self.block_manager.reset_cache_stats()
 
     # ---------------------------------------------------------------- requests
     def now(self) -> float:
@@ -393,7 +396,13 @@ class LLMEngine:
         (time-weighted by step); mem_saving_blocks_pct weights each step by its logical blocks."""
         steps = max(1, self.num_steps)
         logical = self.logical_blocks_sum
+        cache = self.block_manager.cache_stats() if hasattr(self.block_manager, "cache_stats") else {}
         return {
+            # Extension X1 (prefix caching): share of admitted prompt tokens found in the cache.
+            "cache_hit_rate_pct": 100.0 * cache.get("cache_hit_rate", 0.0),
+            "cache_hit_tokens": cache.get("cache_hit_tokens", 0),
+            "cache_query_tokens": cache.get("cache_query_tokens", 0),
+            "cache_evictions": cache.get("cache_evictions", 0),
             "num_steps": self.num_steps,
             "mean_batch": self.num_running_sum / steps,
             "num_prefill_tokens": self.num_prefill_tokens,

@@ -1,0 +1,2 @@
+system,model,trace,rate,num_requests,finished,timed_out,norm_latency_mean,norm_latency_p50,norm_latency_p90,latency_mean,ttft_mean,throughput_req_s,throughput_tok_s,mean_batch,preemptions,wall_s,block_size,kv_cache_gb,num_gpu_blocks,preemption_mode,attention_backend,n,gpu,seed
+paged,facebook/opt-1.3b,sharegpt,12.0,7200,7200,0,0.011648990392278354,0.011218201553381123,0.014454818477338623,2.5090935163466015,0.023935446334295497,11.855065363423941,2688.9708653423863,28.369790671414922,0,607.3353270757943,64,12.0,1024,swap,triton,1,NVIDIA L40S,0

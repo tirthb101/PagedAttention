@@ -1,0 +1,11 @@
+timing,batch,context,sdpa_backend,contiguous_us,paged_ref_us,triton_warps,paged_triton_us,triton_vs_contiguous,contiguous_efficient_us,contiguous_auto_us,paged_triton_w1_us,paged_triton_w2_us,paged_triton_w8_us,paged_triton_best_us,triton_best_warps,triton_max_abs_err,torch,gpu
+eager,8,64,flash,11.2,52.4,default,13.67,1.22,14.93,11.19,14.47,14.33,17.36,13.67,default,4.88e-04,2.11.0+cu128,NVIDIA L40S
+eager,8,128,flash,18.25,51.98,default,19.65,1.077,17.01,18.19,14.4,14.43,32.01,14.4,1,4.88e-04,2.11.0+cu128,NVIDIA L40S
+eager,8,256,flash,32.47,66.61,default,36.79,1.133,28.76,32.36,15.35,21.09,61.21,15.35,1,2.44e-04,2.11.0+cu128,NVIDIA L40S
+eager,8,512,flash,61.06,280.76,default,74.19,1.215,52.56,59.14,28.82,40.38,120.75,28.82,1,2.44e-04,2.11.0+cu128,NVIDIA L40S
+eager,8,1024,flash,240.07,637.32,default,217.05,0.904,212.15,238.89,204.14,204.55,254.19,204.14,1,1.22e-04,2.11.0+cu128,NVIDIA L40S
+eager,32,64,flash,31.77,85.97,default,29.68,0.934,46.39,31.82,14.43,14.7,50.53,14.43,1,4.88e-04,2.11.0+cu128,NVIDIA L40S
+eager,32,128,flash,57.93,278.61,default,57.77,0.997,52.33,55.09,18.53,24.91,96.84,18.53,1,4.88e-04,2.11.0+cu128,NVIDIA L40S
+eager,32,256,flash,205.53,630.83,default,220.61,1.073,205.56,205.55,202.97,203.79,220.2,202.97,1,2.44e-04,2.11.0+cu128,NVIDIA L40S
+eager,32,512,flash,404.03,1309.42,default,437.06,1.082,404.42,404.04,402.1,402.86,431.97,402.1,1,2.44e-04,2.11.0+cu128,NVIDIA L40S
+eager,32,1024,flash,801.83,2629.25,default,875.84,1.092,801.66,801.8,798.88,800.15,854.77,798.88,1,1.22e-04,2.11.0+cu128,NVIDIA L40S
